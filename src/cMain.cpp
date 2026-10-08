@@ -260,9 +260,44 @@ void cMain::ShowPage(bool settings) {
     if (settings) this->pageSettings->Layout();
 }
 
+// Word-wraps text to `width` pixels; words that are still too long (paths) are broken,
+// preferably after '\\' or '_', so nothing is cut off at the edge.
+static wxString WrapToWidth(const wxString& text, wxWindow* w, int width) {
+    if (width <= 20) return text;
+    auto fits = [&](const wxString& s) { return w->GetTextExtent(s).GetWidth() <= width; };
+    wxString out;
+    wxArrayString paragraphs = wxSplit(text, L'\n', L'\0');
+    for (size_t p = 0; p < paragraphs.size(); ++p) {
+        if (p) out += L'\n';
+        wxString line;
+        wxArrayString words = wxSplit(paragraphs[p], L' ', L'\0');
+        for (wxString word : words) {
+            wxString candidate = line.empty() ? word : line + L" " + word;
+            if (fits(candidate)) { line = candidate; continue; }
+            if (!line.empty()) { out += line + L'\n'; line.clear(); }
+            // Break an over-long word.
+            while (!fits(word)) {
+                size_t cut = 1;
+                while (cut < word.length() && fits(word.Left(cut + 1))) ++cut;
+                size_t nice = cut;
+                for (size_t k = cut; k > cut / 2; --k)
+                    if (word[k - 1] == L'\\' || word[k - 1] == L'_') { nice = k; break; }
+                out += word.Left(nice) + L'\n';
+                word = word.Mid(nice);
+            }
+            line = word;
+        }
+        out += line;
+    }
+    return out;
+}
+
 void cMain::setStatus(const wxString& msg) {
-    this->lbl_Status->SetLabel(msg);
-    this->lbl_Status->Wrap(this->lbl_Status->GetSize().GetWidth());
+    // Paths inside the hidden data folder are shown relative to it.
+    wxString text = msg;
+    text.Replace(L"\\\\?\\", L"");
+    text.Replace(wxString(Globals::DATA_DIR) + L"\\", L"");
+    this->lbl_Status->SetLabel(WrapToWidth(text, this->lbl_Status, this->lbl_Status->GetSize().GetWidth()));
     this->pageInstall->Refresh();
 }
 
