@@ -29,7 +29,7 @@ namespace Globals {
     // Patch Minecraft.Windows.exe with the new Xbox Live public key (KeyPatcher).
     inline bool APPLY_KEYPATCH = true;
 
-    // ---- Custom 1.16.100.4 build from Google Drive (zip: .appx with a built-in resource pack + .cer) ----
+    // ---- Custom 1.16.100.4 build from Google Drive (unofficial build, zip: .appx + .cer) ----
     // Settings -> "Скачивание с Google Дисков". Default ON; applies to 1.16.100.4 only.
     inline bool GDRIVE_ENABLED = true;
     inline std::wstring GDRIVE_URL{

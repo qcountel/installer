@@ -6,6 +6,7 @@
 #include "net.h"
 #include "wu.h"
 #include "theme.h"
+#include "dialog.h"
 
 #include <algorithm>
 #include <filesystem>
@@ -165,7 +166,7 @@ cMain::cMain()
     this->rb_GDriveCert = MakeRadio(gd, L"Через сертификат (без Xbox Live)", false);
     s->Add(this->rb_GDriveDev, 0, wxLEFT | wxRIGHT | wxTOP, 12);
     s->Add(this->rb_GDriveCert, 0, wxLEFT | wxRIGHT | wxTOP, 12);
-    s->Add(MakeLabel(gd, L"Сборка со встроенным ресурспаком. Выключено —\nофициальная версия с серверов Microsoft", Theme::CARD, true), 0, wxALL, 12);
+    s->Add(MakeLabel(gd, L"Неофициальная сборка. Выключено —\nофициальная версия с серверов Microsoft", Theme::CARD, true), 0, wxALL, 12);
     this->chk_GDrive->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&) {
         bool on = this->chk_GDrive->GetValue();
         this->rb_GDriveDev->Enable(on);
@@ -214,9 +215,8 @@ cMain::~cMain() {
 
 void cMain::OnClose(wxCloseEvent& evt) {
     if (this->busy.load() && evt.CanVeto()) {
-        int r = wxMessageBox(L"Установка ещё идёт. Прервать её и выйти?", L"Установка идёт",
-                             wxYES_NO | wxNO_DEFAULT | wxICON_QUESTION, this);
-        if (r != wxYES) { evt.Veto(); return; }
+        if (!Dialog::Ask(this, L"Установка идёт", L"Установка ещё не закончена. Прервать её и выйти?",
+                         Dialog::Kind::Warning, L"ВЫЙТИ", L"ОСТАТЬСЯ")) { evt.Veto(); return; }
         // Download and unpack stop at the next chunk; registration is finished by Windows itself.
         this->cancel.store(true);
     }
@@ -506,9 +506,10 @@ void cMain::startInstall(Source src) {
     // Registering an unsigned folder requires Developer Mode — check before downloading 300 MB.
     // The signed Drive build (certificate mode) is installed without it.
     if (src != Source::GDriveCert && !Installer::IsDeveloperModeEnabled()) {
-        wxMessageBox(L"Для установки нужен режим разработчика Windows.\n\n"
+        Dialog::Show(this, L"Нужен режим разработчика",
+                     L"Для установки нужен режим разработчика Windows.\n\n"
                      L"Сейчас откроются Параметры → Для разработчиков: включите «Режим разработчика» "
-                     L"и нажмите кнопку ещё раз.", L"Нужен режим разработчика", wxOK | wxICON_INFORMATION, this);
+                     L"и нажмите кнопку ещё раз.", Dialog::Kind::Info, L"ОТКРЫТЬ");
         Installer::OpenDeveloperSettings();
         this->setStatus(L"Включите режим разработчика и нажмите ещё раз");
         return;
@@ -771,11 +772,13 @@ void cMain::InstallWorker(VersionInfo v, Source src) {
             if (driveFailed) {
                 // Offer the official build instead (answer 4).
                 this->CallAfter([this, status] {
-                    int r = wxMessageBox(L"Не удалось получить сборку с Google Диска:\n" + status +
-                                         L"\n\nСкачать официальную версию " + std::wstring(Globals::DEFAULT_VERSION) +
-                                         L" с серверов Microsoft?",
-                                         L"Google Диск недоступен", wxYES_NO | wxICON_WARNING, this);
-                    if (r == wxYES) this->startInstall(Source::Official);
+                    std::wstring reason = status;
+                    if (!reason.empty()) CharUpperBuffW(&reason[0], 1);
+                    bool yes = Dialog::Ask(this, L"Google Диск недоступен",
+                        L"Не удалось получить сборку с Google Диска.\n\n" + reason +
+                        L"\n\nСкачать официальную версию " + std::wstring(Globals::DEFAULT_VERSION) +
+                        L" с серверов Microsoft?", Dialog::Kind::Warning, L"СКАЧАТЬ", L"ОТМЕНА");
+                    if (yes) this->startInstall(Source::Official);
                 });
             }
             return;
@@ -913,7 +916,7 @@ void cMain::OnDelete(wxCommandEvent&) {
     std::wstring text = L"Удалить Minecraft " + name + L"?\n\n";
     if (installed) text += L"Игра будет удалена из Windows. Миры сохранятся в папку backups.\n";
     text += L"Скачанные файлы версии будут удалены с диска.";
-    if (wxMessageBox(text, L"Удаление версии", wxYES_NO | wxNO_DEFAULT | wxICON_WARNING, this) != wxYES)
+    if (!Dialog::Ask(this, L"Удаление версии", text, Dialog::Kind::Warning, L"УДАЛИТЬ", L"ОТМЕНА"))
         return;
 
     if (this->worker.joinable()) this->worker.join();

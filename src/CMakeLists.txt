@@ -2,6 +2,7 @@ target_sources(${PROJECT_NAME} PRIVATE
     cApp.cpp
     cMain.cpp
     flatButton.cpp
+    dialog.cpp
     config.cpp
     net.cpp
     wu.cpp

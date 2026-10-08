@@ -155,39 +155,66 @@ bool DownloadFile(const std::wstring& url, const std::wstring& path,
                   const std::atomic<bool>* cancel, std::wstring& status) {
     InetHandle session(OpenSession(60000));
     if (!session) { status = L"не удалось инициализировать интернет"; return false; }
-    InetHandle req(InternetOpenUrlW(session, url.c_str(), nullptr, 0, RequestFlags(url), 0));
-    if (!req) { status = ErrorText(GetLastError()); return false; }
-    if (!CheckStatus(req, status)) return false;
-    const uint64_t total = ContentLength(req);
 
     std::wstring part = path + L".part";
     HANDLE file = CreateFileW(part.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) { status = L"не удалось создать файл для загрузки"; return false; }
 
+    // A dropped connection or a timeout is retried and resumed with "Range: bytes=<done>-"
+    // (Microsoft CDN and Google Drive both support it), so a hiccup does not restart 300 MB.
+    const int MAX_ATTEMPTS = 6;
     std::vector<char> buf(256 * 1024);
-    uint64_t done = 0;
-    DWORD read = 0;
-    bool ok = true;
-    for (;;) {
-        if (cancel && cancel->load()) { status = L"загрузка отменена"; ok = false; break; }
-        if (!InternetReadFile(req, buf.data(), (DWORD)buf.size(), &read)) {
-            status = L"обрыв загрузки: " + ErrorText(GetLastError());
-            ok = false;
-            break;
+    uint64_t done = 0, total = 0;
+    bool ok = false, fatal = false;
+    for (int attempt = 0; attempt < MAX_ATTEMPTS && !ok && !fatal; ++attempt) {
+        if (attempt > 0) {
+            for (int t = 0; t < attempt * 10 && !(cancel && cancel->load()); ++t) Sleep(200);   // 2 s, 4 s, ...
         }
-        if (read == 0) break;
-        DWORD written = 0;
-        if (!WriteFile(file, buf.data(), read, &written, nullptr) || written != read) {
-            status = L"ошибка записи на диск (нет места?)";
-            ok = false;
-            break;
+        if (cancel && cancel->load()) { status = L"загрузка отменена"; break; }
+
+        std::wstring headers;
+        if (done > 0) headers = L"Range: bytes=" + std::to_wstring(done) + L"-\r\n";
+        InetHandle req(InternetOpenUrlW(session, url.c_str(), headers.empty() ? nullptr : headers.c_str(),
+                                        headers.empty() ? 0 : (DWORD)-1L, RequestFlags(url), 0));
+        if (!req) { status = ErrorText(GetLastError()); continue; }
+        if (!CheckStatus(req, status)) { fatal = true; break; }
+
+        DWORD code = 0, len = sizeof(code);
+        HttpQueryInfoW(req, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER, &code, &len, nullptr);
+        if (done > 0 && code != 206) {
+            // The server ignored Range: start the file over.
+            SetFilePointer(file, 0, nullptr, FILE_BEGIN);
+            SetEndOfFile(file);
+            done = 0;
         }
-        done += read;
-        if (onBytes) onBytes(done, total);
+        uint64_t length = ContentLength(req);
+        if (length) total = done + length;
+
+        bool finished = false;
+        DWORD read = 0;
+        for (;;) {
+            if (cancel && cancel->load()) { status = L"загрузка отменена"; fatal = true; break; }
+            if (!InternetReadFile(req, buf.data(), (DWORD)buf.size(), &read)) {
+                status = L"обрыв загрузки: " + ErrorText(GetLastError());
+                break;   // retry and resume
+            }
+            if (read == 0) { finished = true; break; }
+            DWORD written = 0;
+            if (!WriteFile(file, buf.data(), read, &written, nullptr) || written != read) {
+                status = L"ошибка записи на диск (нет места?)";
+                fatal = true;
+                break;
+            }
+            done += read;
+            if (onBytes) onBytes(done, total);
+        }
+        if (finished) {
+            if (total && done != total) status = L"файл скачан не полностью";   // retry and resume
+            else ok = true;
+        }
     }
     CloseHandle(file);
 
-    if (ok && total && done != total) { status = L"файл скачан не полностью"; ok = false; }
     if (!ok) { DeleteFileW(part.c_str()); return false; }
     if (!MoveFileExW(part.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING)) {
         DeleteFileW(part.c_str());
