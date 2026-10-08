@@ -18,6 +18,8 @@ public:
     void SetCaption(const wxString& s) { caption = s; Refresh(); }
     void SetButtonStyle(Style s) { style = s; Refresh(); }
     void SetSelected(bool on) { selected = on; Refresh(); }   // for STYLE_TAB
+    void SetPassive(bool on) { passive = on; Refresh(); }      // looks like a button, not clickable
+    void SetIcon(const wxBitmap& bmp) { icon = bmp; Refresh(); } // drawn instead of the caption
 
     bool Enable(bool enable = true) override;
 
@@ -28,6 +30,8 @@ private:
     bool selected = false;
     bool hovering = false;
     bool pressed = false;
+    bool passive = false;
+    wxBitmap icon;
 
     void OnPaint(wxPaintEvent&);
     void OnEnter(wxMouseEvent&);

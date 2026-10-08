@@ -516,6 +516,57 @@ bool InstallSigned(const std::wstring& appxPath, const std::wstring& cerPath, co
     return true;
 }
 
+bool IsOurs(const PackageState& pkg, const std::wstring& versionsRoot, const std::wstring& signedVersion) {
+    if (!pkg.found) return false;
+    if (pkg.devMode) {
+        if (pkg.location.size() <= versionsRoot.size()) return false;
+        return _wcsnicmp(pkg.location.c_str(), versionsRoot.c_str(), versionsRoot.size()) == 0 &&
+               (pkg.location[versionsRoot.size()] == L'\\' || pkg.location[versionsRoot.size()] == L'/');
+    }
+    return pkg.version == signedVersion;
+}
+
+bool Uninstall(const std::wstring& versionsRoot, const std::wstring& signedVersion,
+               const std::wstring& backupRoot,
+               const std::function<void(const std::wstring&)>& onStatus,
+               bool& removed, std::wstring& status) {
+    EnsureApartment();
+    removed = false;
+    try {
+        PackageManager pm;
+        for (auto const& pkg : pm.FindPackagesForUser(winrt::hstring{}, Globals::PACKAGE_FAMILY)) {
+            PackageState st;
+            st.found = true;
+            try { st.location = pkg.InstalledLocation().Path().c_str(); } catch (...) {}
+            try { st.devMode = pkg.IsDevelopmentMode(); } catch (...) {}
+            auto v = pkg.Id().Version();
+            st.version = std::to_wstring(v.Major) + L"." + std::to_wstring(v.Minor) + L"." +
+                         std::to_wstring(v.Build) + L"." + std::to_wstring(v.Revision);
+            if (!IsOurs(st, versionsRoot, signedVersion)) continue;
+
+            std::wstring worlds = StoreWorldsDir();
+            std::error_code ec;
+            if (fs::exists(LongPath(worlds), ec)) {
+                std::wstring backup = backupRoot + L"\\com.mojang_" + Timestamp();
+                if (onStatus) onStatus(L"Сохраняю миры в " + backup + L"...");
+                if (!CopyTree(worlds, backup, status)) return false;
+                status = L"Миры сохранены в " + backup;
+            }
+            if (onStatus) onStatus(L"Удаляю игру из Windows...");
+            std::wstring err;
+            if (!Wait(pm.RemovePackageAsync(pkg.Id().FullName()), nullptr, err)) {
+                status = L"Не удалось удалить игру из Windows: " + err;
+                return false;
+            }
+            removed = true;
+        }
+    } catch (winrt::hresult_error const& e) {
+        status = L"Не удалось удалить игру: " + Hex(e.code()) + L" " + std::wstring(e.message().c_str());
+        return false;
+    }
+    return true;
+}
+
 bool Launch() {
     std::wstring target = std::wstring(L"shell:AppsFolder\\") + Globals::APP_ID;
     HINSTANCE r = ShellExecuteW(nullptr, L"open", L"explorer.exe", target.c_str(), nullptr, SW_SHOWNORMAL);

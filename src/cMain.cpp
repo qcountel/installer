@@ -16,11 +16,9 @@ enum {
     ID_TAB_SETTINGS,
     ID_MAIN,
     ID_VERSION,
+    ID_DELETE,
     ID_OPEN_FOLDER,
     ID_SAVE,
-    ID_VERSION_DEFAULT = 1900,
-    ID_VERSION_BASE = 2000,          // + index in cMain::versions
-    ID_VERSION_LAST = ID_VERSION_BASE + 4999,
 };
 
 static const int TAB_H = 42;
@@ -35,7 +33,7 @@ static const int STEP_TO[cMain::STEP_COUNT]   = { 55, 80, 83, 100 };
 
 wxBEGIN_EVENT_TABLE(cMain, wxFrame)
 EVT_BUTTON(ID_MAIN, cMain::OnMainButton)
-EVT_BUTTON(ID_VERSION, cMain::OnVersionButton)
+EVT_BUTTON(ID_DELETE, cMain::OnDelete)
 EVT_BUTTON(ID_SAVE, cMain::OnSave)
 EVT_CLOSE(cMain::OnClose)
 wxEND_EVENT_TABLE();
@@ -65,6 +63,34 @@ static wxRadioButton* MakeRadio(wxWindow* parent, const wxString& text, bool fir
     return r;
 }
 
+// Pixel-art trash can (scaled 2x), drawn in the button text colour.
+static wxBitmap TrashIcon() {
+    static const char* ART[] = {
+        "...#####...",
+        "###########",
+        "...........",
+        ".#########.",
+        ".##.#.#.##.",
+        ".##.#.#.##.",
+        ".##.#.#.##.",
+        ".##.#.#.##.",
+        ".##.#.#.##.",
+        ".##.#.#.##.",
+        ".#########.",
+    };
+    const int rows = (int)(sizeof(ART) / sizeof(ART[0])), cols = 11, k = 2;
+    wxImage img(cols * k, rows * k);
+    img.InitAlpha();
+    const wxColour c = Theme::FG;
+    for (int y = 0; y < rows * k; ++y)
+        for (int x = 0; x < cols * k; ++x) {
+            bool on = ART[y / k][x / k] == '#';
+            img.SetRGB(x, y, c.Red(), c.Green(), c.Blue());
+            img.SetAlpha(x, y, on ? 255 : 0);
+        }
+    return wxBitmap(img);
+}
+
 static wxPanel* MakeCard(wxWindow* parent, const wxString& title, wxBoxSizer*& outSizer) {
     wxPanel* card = new wxPanel(parent, wxID_ANY);
     card->SetBackgroundColour(Theme::CARD);
@@ -75,7 +101,7 @@ static wxPanel* MakeCard(wxWindow* parent, const wxString& title, wxBoxSizer*& o
 }
 
 cMain::cMain()
-    : wxFrame(nullptr, wxID_ANY, L"Minecraft Installer", wxDefaultPosition, wxSize(420, 720),
+    : wxFrame(nullptr, wxID_ANY, L"Minecraft Installer", wxDefaultPosition, wxSize(440, 770),
               wxMINIMIZE_BOX | wxSYSTEM_MENU | wxCAPTION | wxCLOSE_BOX | wxCLIP_CHILDREN) {
 
     Theme::EnsurePixelFont();
@@ -87,7 +113,6 @@ cMain::cMain()
     this->SetBackgroundColour(Theme::BG);
 
     this->selected = { Globals::DEFAULT_VERSION, Globals::DEFAULT_UPDATE_ID };
-    this->versions = { this->selected };
     this->steps.fill(StepState::Pending);
 
     // ---- Tabs ----
@@ -107,8 +132,13 @@ cMain::cMain()
     this->pageInstall->SetBackgroundStyle(wxBG_STYLE_PAINT);
     this->pageInstall->Bind(wxEVT_PAINT, &cMain::OnInstallPagePaint, this);
 
-    this->btn_Version = new FlatButton(this->pageInstall, ID_VERSION, L"", wxDefaultPosition, wxSize(300, 40));
+    this->btn_Version = new FlatButton(this->pageInstall, ID_VERSION, L"", wxDefaultPosition, wxSize(244, 40));
     this->btn_Version->SetFont(Theme::Font(9));
+    this->btn_Version->SetPassive(true);   // only 1.16.100.4 is offered
+
+    this->btn_Delete = new FlatButton(this->pageInstall, ID_DELETE, L"", wxDefaultPosition, wxSize(48, 40));
+    this->btn_Delete->SetIcon(TrashIcon());
+    this->btn_Delete->SetToolTip(L"Удалить версию");
 
     this->btn_Main = new FlatButton(this->pageInstall, ID_MAIN, L"СКАЧАТЬ", wxDefaultPosition, wxSize(300, 76));
     this->btn_Main->SetFont(Theme::Font(18));
@@ -121,9 +151,6 @@ cMain::cMain()
 
     this->pageInstall->Bind(wxEVT_SIZE, [this](wxSizeEvent& e) { this->layoutInstallPage(); e.Skip(); });
 
-    // Popup menu items (version list) are routed to the frame.
-    this->Bind(wxEVT_MENU, &cMain::OnVersionPicked, this, ID_VERSION_DEFAULT);
-    this->Bind(wxEVT_MENU, &cMain::OnVersionPicked, this, ID_VERSION_BASE, ID_VERSION_LAST);
 
     // =================== SETTINGS PAGE ===================
     this->pageSettings = new wxPanel(this, wxID_ANY);
@@ -162,14 +189,6 @@ cMain::cMain()
     s->Add(this->btn_OpenFolder, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 12);
     root->Add(files, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, 14);
 
-    wxPanel* list = MakeCard(this->pageSettings, L"СПИСОК ВЕРСИЙ", s);
-    this->txt_VersionsUrl = new wxTextCtrl(list, wxID_ANY, L"", wxDefaultPosition, wxSize(-1, 30));
-    this->txt_VersionsUrl->SetBackgroundColour(Theme::INPUT_BG);
-    this->txt_VersionsUrl->SetForegroundColour(Theme::FG);
-    this->txt_VersionsUrl->SetFont(Theme::Font(9));
-    s->Add(this->txt_VersionsUrl, 0, wxEXPAND | wxLEFT | wxRIGHT, 12);
-    s->Add(MakeLabel(list, L"База версий MCLauncher (применится после перезапуска)", Theme::CARD, true), 0, wxALL, 12);
-    root->Add(list, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, 14);
 
     root->AddStretchSpacer(1);
 
@@ -181,30 +200,16 @@ cMain::cMain()
     this->fillSettings();
 
     this->Bind(wxEVT_SIZE, [this](wxSizeEvent& e) { this->layoutTabs(); e.Skip(); });
-    this->SetMinSize(wxSize(420, 700));
+    this->SetMinSize(wxSize(440, 750));
     this->ShowPage(false);
 
     this->selectVersion(this->selected);
-    this->setStatus(L"Загружаю список версий...");
-
-    // The online version list is loaded in the background; 1.16.100.4 works without it.
-    this->listLoader = std::thread([this] {
-        std::wstring st;
-        std::vector<VersionInfo> list = Versions::Load(st);
-        this->CallAfter([this, list, st] {
-            this->versions = list;
-            if (!this->busy.load()) {
-                this->setStatus(st + L" (" + std::to_wstring(list.size()) + L")");
-                this->refreshMainButton();
-            }
-        });
-    });
+    this->setStatus(L"Minecraft " + std::wstring(Globals::DEFAULT_VERSION));
 }
 
 cMain::~cMain() {
     this->cancel.store(true);
     if (this->worker.joinable()) this->worker.join();
-    if (this->listLoader.joinable()) this->listLoader.join();
 }
 
 void cMain::OnClose(wxCloseEvent& evt) {
@@ -236,7 +241,11 @@ void cMain::layoutInstallPage() {
     int bx = (w - bs.GetWidth()) / 2;
     int by = h - bs.GetHeight() - 100;
     wxSize vs = this->btn_Version->GetSize();
-    this->btn_Version->SetPosition(wxPoint((w - vs.GetWidth()) / 2, by - vs.GetHeight() - 12));
+    wxSize ds = this->btn_Delete->GetSize();
+    int rowW = vs.GetWidth() + 8 + ds.GetWidth();
+    int rowX = (w - rowW) / 2, rowY = by - vs.GetHeight() - 12;
+    this->btn_Version->SetPosition(wxPoint(rowX, rowY));
+    this->btn_Delete->SetPosition(wxPoint(rowX + vs.GetWidth() + 8, rowY));
     this->btn_Main->SetPosition(wxPoint(bx, by));
     this->lbl_Status->SetSize(16, by + bs.GetHeight() + 12, w - 32, 84);
     this->pageInstall->Refresh();
@@ -305,53 +314,6 @@ void cMain::refreshMainButton() {
     else if (ready)      this->btn_Main->SetCaption(L"УСТАНОВИТЬ");
     else                 this->btn_Main->SetCaption(L"СКАЧАТЬ");
     this->pageInstall->Refresh();
-}
-
-void cMain::OnVersionButton(wxCommandEvent&) {
-    if (this->busy.load()) return;
-
-    auto label = [this](const VersionInfo& v) {
-        wxString s = v.name;
-        if (v.name == Globals::DEFAULT_VERSION) s += L"  (рекомендуется)";
-        if (Versions::IsExtracted(v.name)) s += L"  [скачана]";
-        return s;
-    };
-
-    wxMenu menu;
-    wxMenuItem* def = menu.AppendCheckItem(ID_VERSION_DEFAULT, label({ Globals::DEFAULT_VERSION, L"" }));
-    def->Check(this->selected.name == Globals::DEFAULT_VERSION);
-    menu.AppendSeparator();
-
-    // Group by "major.minor", keeping the newest-first order.
-    std::vector<std::pair<std::wstring, wxMenu*>> groups;
-    for (size_t i = 0; i < this->versions.size() && i < 5000; ++i) {
-        const VersionInfo& v = this->versions[i];
-        std::wstring major = Versions::Major(v.name);
-        if (groups.empty() || groups.back().first != major) groups.push_back({ major, new wxMenu() });
-        wxMenuItem* item = groups.back().second->AppendCheckItem(ID_VERSION_BASE + (int)i, label(v));
-        item->Check(v.name == this->selected.name);
-    }
-    for (auto& [major, sub] : groups) menu.AppendSubMenu(sub, major);
-
-    wxPoint pos = this->btn_Version->GetPosition();
-    this->pageInstall->PopupMenu(&menu, pos.x, pos.y + this->btn_Version->GetSize().GetHeight());
-}
-
-void cMain::OnVersionPicked(wxCommandEvent& evt) {
-    if (this->busy.load()) return;
-    int id = evt.GetId();
-    if (id == ID_VERSION_DEFAULT) {
-        this->selectVersion({ Globals::DEFAULT_VERSION, Globals::DEFAULT_UPDATE_ID });
-    } else {
-        size_t idx = (size_t)(id - ID_VERSION_BASE);
-        if (idx >= this->versions.size()) return;
-        this->selectVersion(this->versions[idx]);
-    }
-    if (this->selected.name != Globals::DEFAULT_VERSION)
-        this->setStatus(L"Выбрана " + this->selected.name + L". Рекомендуемая версия — " +
-                        std::wstring(Globals::DEFAULT_VERSION));
-    else
-        this->setStatus(L"Выбрана " + this->selected.name);
 }
 
 // --------------------------------------------------------------------------- painting
@@ -564,11 +526,7 @@ void cMain::startInstall(Source src) {
     this->progress = 0;
     this->stepProgress = 0;
     this->stepDetail.clear();
-    this->btn_Main->Enable(false);
-    this->btn_Main->SetCaption(L"...");
-    this->btn_Version->Enable(false);
-    this->tab_Settings->Enable(false);
-    this->pageInstall->Refresh();
+    this->setBusyUi(true);
 
     this->worker = std::thread(&cMain::InstallWorker, this, this->selected, src);
 }
@@ -782,10 +740,7 @@ void cMain::InstallWorker(VersionInfo v, Source src) {
     auto finish = [this](const std::wstring& msg, bool ok) {
         this->postStatus(msg);
         this->CallAfter([this, ok] {
-            this->busy.store(false);
-            this->btn_Main->Enable(true);
-            this->btn_Version->Enable(true);
-            this->tab_Settings->Enable(true);
+            this->setBusyUi(false);
             this->refreshMainButton();
             if (!ok && !this->playReady) this->btn_Main->SetCaption(L"ПОВТОРИТЬ");
         });
@@ -903,7 +858,6 @@ void cMain::fillSettings() {
     this->rb_GDriveCert->Enable(Globals::GDRIVE_ENABLED);
     this->chk_KeyPatch->SetValue(Globals::APPLY_KEYPATCH);
     this->chk_DeleteAppx->SetValue(Globals::DELETE_APPX);
-    this->txt_VersionsUrl->SetValue(Globals::VERSIONS_URL);
 }
 
 void cMain::OnSave(wxCommandEvent&) {
@@ -911,12 +865,89 @@ void cMain::OnSave(wxCommandEvent&) {
     Globals::GDRIVE_MODE = this->rb_GDriveCert->GetValue() ? Globals::GDriveMode::Cert : Globals::GDriveMode::Dev;
     Globals::APPLY_KEYPATCH = this->chk_KeyPatch->GetValue();
     Globals::DELETE_APPX = this->chk_DeleteAppx->GetValue();
-    wxString url = this->txt_VersionsUrl->GetValue().Strip(wxString::both);
-    if (!url.IsEmpty()) Globals::VERSIONS_URL = url.ToStdWstring();
 
     this->cfg.save();
     this->fillSettings();
     this->selectVersion(this->selected);   // source may have changed
     this->setStatus(L"Настройки сохранены");
     this->ShowPage(false);
+}
+
+// --------------------------------------------------------------------------- delete version
+void cMain::setBusyUi(bool on) {
+    if (!on) this->busy.store(false);
+    this->btn_Main->Enable(!on);
+    if (on) this->btn_Main->SetCaption(L"...");
+    this->btn_Delete->Enable(!on);
+    this->tab_Settings->Enable(!on);
+    this->pageInstall->Refresh();
+}
+
+namespace {
+const wchar_t* ALL_SUFFIXES[] = { L"", Versions::GDRIVE_SUFFIX, Versions::GDRIVE_SIGNED_SUFFIX };
+const wchar_t* LEFTOVER_EXTS[] = { L".appx", L".zip", L".appx.part", L".zip.part" };
+
+bool HasLocalFiles(const std::wstring& version) {
+    for (const wchar_t* suffix : ALL_SUFFIXES) {
+        if (Exists(Versions::Dir(version, suffix))) return true;
+        for (const wchar_t* ext : LEFTOVER_EXTS)
+            if (Exists(Versions::Root() + L"\\" + Versions::FolderName(version, suffix) + ext)) return true;
+    }
+    return false;
+}
+}
+
+void cMain::OnDelete(wxCommandEvent&) {
+    if (this->busy.load()) return;
+    const std::wstring name = this->selected.name;
+    const bool installed = Installer::IsOurs(Installer::Current(), Versions::Root(), GDRIVE_PACKAGE_VERSION);
+    if (!installed && !HasLocalFiles(name)) {
+        this->setStatus(L"Версия " + name + L" не установлена — удалять нечего");
+        return;
+    }
+    if (installed && Installer::IsGameRunning()) {
+        this->setStatus(L"Minecraft запущен — закройте игру и нажмите ещё раз");
+        return;
+    }
+
+    std::wstring text = L"Удалить Minecraft " + name + L"?\n\n";
+    if (installed) text += L"Игра будет удалена из Windows. Миры сохранятся в папку backups.\n";
+    text += L"Скачанные файлы версии будут удалены с диска.";
+    if (wxMessageBox(text, L"Удаление версии", wxYES_NO | wxNO_DEFAULT | wxICON_WARNING, this) != wxYES)
+        return;
+
+    if (this->worker.joinable()) this->worker.join();
+    this->busy.store(true);
+    this->cancel.store(false);
+    this->steps.fill(StepState::Pending);
+    this->progress = 0;
+    this->stepProgress = 0;
+    this->stepDetail.clear();
+    this->setBusyUi(true);
+    this->worker = std::thread(&cMain::UninstallWorker, this, this->selected);
+}
+
+void cMain::UninstallWorker(VersionInfo v) {
+    std::wstring status;
+    bool removed = false;
+    bool ok = Installer::Uninstall(Versions::Root(), GDRIVE_PACKAGE_VERSION, Globals::DATA_DIR + L"\\backups",
+                                   [this](const std::wstring& s) { this->postStatus(s); }, removed, status);
+    std::wstring msg;
+    if (!ok) {
+        msg = status;
+    } else {
+        this->postStatus(L"Удаляю файлы версии...");
+        std::error_code ec;
+        for (const wchar_t* suffix : ALL_SUFFIXES) {
+            std::filesystem::remove_all(L"\\\\?\\" + Versions::Dir(v.name, suffix), ec);
+            for (const wchar_t* ext : LEFTOVER_EXTS)
+                DeleteFileW((Versions::Root() + L"\\" + Versions::FolderName(v.name, suffix) + ext).c_str());
+        }
+        msg = L"Minecraft " + v.name + L" удалён" + (status.empty() ? L"" : L".\n" + status);
+    }
+    this->CallAfter([this, msg] {
+        this->setBusyUi(false);
+        this->refreshMainButton();
+        this->setStatus(msg);
+    });
 }

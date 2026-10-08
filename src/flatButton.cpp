@@ -29,9 +29,9 @@ bool FlatButton::Enable(bool enable) {
     return r;
 }
 
-void FlatButton::OnEnter(wxMouseEvent& e) { hovering = true; Refresh(); e.Skip(); }
+void FlatButton::OnEnter(wxMouseEvent& e) { if (passive) { e.Skip(); return; } hovering = true; Refresh(); e.Skip(); }
 void FlatButton::OnLeave(wxMouseEvent& e) { hovering = false; pressed = false; Refresh(); e.Skip(); }
-void FlatButton::OnDown(wxMouseEvent& e) { pressed = true; Refresh(); e.Skip(); }
+void FlatButton::OnDown(wxMouseEvent& e) { if (passive) { e.Skip(); return; } pressed = true; Refresh(); e.Skip(); }
 
 void FlatButton::OnUp(wxMouseEvent& e) {
     bool wasPressed = pressed;
@@ -111,7 +111,11 @@ void FlatButton::OnPaint(wxPaintEvent&) {
     dc.DrawRectangle(3, h - 3 - b, w - 6, b);  // bottom
     dc.DrawRectangle(w - 3 - b, 3, b, h - 6);  // right
 
-    if (!caption.empty()) {
+    if (icon.IsOk()) {
+        int ix = (w - icon.GetWidth()) / 2 + (sunken ? 1 : 0);
+        int iy = (h - icon.GetHeight()) / 2 + (sunken ? 1 : 0);
+        dc.DrawBitmap(IsEnabled() ? icon : icon.ConvertToDisabled(), ix, iy, true);
+    } else if (!caption.empty()) {
         wxColour fg = IsEnabled() ? colText : Theme::FG_DIM;
         wxCoord tw, th;
         dc.GetTextExtent(caption, &tw, &th);

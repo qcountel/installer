@@ -28,7 +28,8 @@ public:
     wxPanel*      pageSettings = nullptr;
 
     // Install page
-    FlatButton*   btn_Version = nullptr;  // "ВЕРСИЯ: 1.16.100.4" -> popup menu
+    FlatButton*   btn_Version = nullptr;  // "ВЕРСИЯ: 1.16.100.4" (display only)
+    FlatButton*   btn_Delete = nullptr;   // trash: uninstall + delete files
     FlatButton*   btn_Main = nullptr;     // "СКАЧАТЬ" / "УСТАНОВИТЬ" / "ИГРАТЬ"
     wxStaticText* lbl_Status = nullptr;
 
@@ -38,19 +39,15 @@ public:
     wxRadioButton* rb_GDriveCert = nullptr;
     wxCheckBox*   chk_KeyPatch = nullptr;
     wxCheckBox*   chk_DeleteAppx = nullptr;
-    wxTextCtrl*   txt_VersionsUrl = nullptr;
     FlatButton*   btn_OpenFolder = nullptr;
     FlatButton*   btn_Save = nullptr;
 
     Config cfg;
 
     std::thread worker;
-    std::thread listLoader;
     std::atomic<bool> busy{ false };
     std::atomic<bool> cancel{ false };
 
-    // Version list (UI thread only). versions[0..] newest first; selected defaults to 1.16.100.4.
-    std::vector<VersionInfo> versions;
     VersionInfo selected;
     bool playReady = false;   // selected version is the one registered in Windows
 
@@ -69,13 +66,14 @@ public:
     void layoutInstallPage();
 
     // Versions
-    void OnVersionButton(wxCommandEvent& evt);
-    void OnVersionPicked(wxCommandEvent& evt);
     void selectVersion(const VersionInfo& v);
     void refreshMainButton();
 
     // Install
     void OnMainButton(wxCommandEvent& evt);
+    void OnDelete(wxCommandEvent& evt);
+    void UninstallWorker(VersionInfo v);
+    void setBusyUi(bool busy);
     Source sourceFor(const VersionInfo& v) const;
     void startInstall(Source src);
     void InstallWorker(VersionInfo v, Source src);

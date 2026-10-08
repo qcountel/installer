@@ -54,6 +54,17 @@ namespace Installer {
                        const std::function<void(const std::wstring&)>& onStatus,
                        std::wstring& status);
 
+    // Removes the Minecraft package installed by this program: a Developer Mode registration from a
+    // folder under versionsRoot, or the signed Drive build (signedVersion). A Store copy is never touched.
+    // Worlds are copied to backupRoot first. removed = a package was actually removed.
+    bool Uninstall(const std::wstring& versionsRoot, const std::wstring& signedVersion,
+                   const std::wstring& backupRoot,
+                   const std::function<void(const std::wstring&)>& onStatus,
+                   bool& removed, std::wstring& status);
+
+    // True if the installed Minecraft package is one this program installed (see Uninstall).
+    bool IsOurs(const PackageState& pkg, const std::wstring& versionsRoot, const std::wstring& signedVersion);
+
     // Starts the registered game.
     bool Launch();
 
