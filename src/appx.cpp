@@ -179,4 +179,85 @@ bool Extract(const std::wstring& appxPath, const std::wstring& dir,
     return ok;
 }
 
+namespace {
+
+bool OpenZip(const std::wstring& path, HANDLE& h, mz_zip_archive& zip, std::wstring& status) {
+    h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                    FILE_FLAG_RANDOM_ACCESS, nullptr);
+    if (h == INVALID_HANDLE_VALUE) { status = L"не удалось открыть архив"; return false; }
+    LARGE_INTEGER size{};
+    GetFileSizeEx(h, &size);
+    zip = mz_zip_archive{};
+    zip.m_pRead = ReadAt;
+    zip.m_pIO_opaque = &h;
+    if (!mz_zip_reader_init(&zip, (mz_uint64)size.QuadPart, 0)) {
+        CloseHandle(h);
+        status = L"архив повреждён (не удалось прочитать zip)";
+        return false;
+    }
+    return true;
+}
+
+bool EndsWithNoCase(const std::wstring& s, const std::wstring& suffix) {
+    if (s.size() < suffix.size()) return false;
+    return _wcsicmp(s.c_str() + (s.size() - suffix.size()), suffix.c_str()) == 0;
+}
+
+} // namespace
+
+bool ExtractEntry(const std::wstring& zipPath, const std::wstring& suffix, const std::wstring& outPath,
+                  const std::function<void(uint64_t, uint64_t)>& onProgress,
+                  const std::atomic<bool>* cancel, std::wstring& foundName, std::wstring& status) {
+    HANDLE src = INVALID_HANDLE_VALUE;
+    mz_zip_archive zip{};
+    if (!OpenZip(zipPath, src, zip, status)) return false;
+
+    bool ok = false;
+    status = L"в архиве нет файла *" + suffix;
+    const mz_uint count = mz_zip_reader_get_num_files(&zip);
+    for (mz_uint i = 0; i < count; ++i) {
+        mz_zip_archive_file_stat st{};
+        if (!mz_zip_reader_file_stat(&zip, i, &st) || mz_zip_reader_is_file_a_directory(&zip, i)) continue;
+        std::wstring name = Net::Widen(st.m_filename);
+        if (!EndsWithNoCase(name, suffix)) continue;
+        foundName = name;
+
+        std::error_code ec;
+        fs::create_directories(fs::path(outPath).parent_path(), ec);
+        HANDLE out = CreateFileW(outPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (out == INVALID_HANDLE_VALUE) { status = L"не удалось создать " + outPath; break; }
+        uint64_t done = 0;
+        WriteCtx ctx{ out, &done, st.m_uncomp_size, &onProgress, cancel, 0 };
+        ok = mz_zip_reader_extract_to_callback(&zip, i, WriteChunk, &ctx, 0) != 0;
+        CloseHandle(out);
+        if (!ok) {
+            DeleteFileW(outPath.c_str());
+            status = (cancel && cancel->load()) ? L"распаковка отменена"
+                   : L"не удалось распаковать " + name + L": " + Net::Widen(mz_zip_get_error_string(mz_zip_get_last_error(&zip)));
+        } else {
+            status.clear();
+            if (onProgress) onProgress(st.m_uncomp_size, st.m_uncomp_size);
+        }
+        break;
+    }
+    mz_zip_reader_end(&zip);
+    CloseHandle(src);
+    return ok;
+}
+
+bool ReadEntry(const std::wstring& zipPath, const char* name, std::string& out, std::wstring& status) {
+    HANDLE src = INVALID_HANDLE_VALUE;
+    mz_zip_archive zip{};
+    if (!OpenZip(zipPath, src, zip, status)) return false;
+    size_t size = 0;
+    void* data = mz_zip_reader_extract_file_to_heap(&zip, name, &size, 0);
+    bool ok = data != nullptr;
+    if (ok) out.assign(static_cast<const char*>(data), size);
+    else status = L"в пакете нет " + Net::Widen(name);
+    mz_free(data);
+    mz_zip_reader_end(&zip);
+    CloseHandle(src);
+    return ok;
+}
+
 } // namespace Appx

@@ -56,6 +56,15 @@ static wxCheckBox* MakeCheck(wxWindow* parent, const wxString& text) {
     return c;
 }
 
+static wxRadioButton* MakeRadio(wxWindow* parent, const wxString& text, bool first) {
+    wxRadioButton* r = new wxRadioButton(parent, wxID_ANY, text, wxDefaultPosition, wxDefaultSize,
+                                         first ? wxRB_GROUP : 0);
+    r->SetForegroundColour(Theme::FG);
+    r->SetBackgroundColour(Theme::CARD);
+    r->SetFont(Theme::Font(9));
+    return r;
+}
+
 static wxPanel* MakeCard(wxWindow* parent, const wxString& title, wxBoxSizer*& outSizer) {
     wxPanel* card = new wxPanel(parent, wxID_ANY);
     card->SetBackgroundColour(Theme::CARD);
@@ -122,6 +131,21 @@ cMain::cMain()
     wxBoxSizer* root = new wxBoxSizer(wxVERTICAL);
 
     wxBoxSizer* s = nullptr;
+    wxPanel* gd = MakeCard(this->pageSettings, L"СБОРКА 1.16.100.4", s);
+    this->chk_GDrive = MakeCheck(gd, L"Скачивание с Google Дисков");
+    s->Add(this->chk_GDrive, 0, wxLEFT | wxRIGHT, 12);
+    this->rb_GDriveDev = MakeRadio(gd, L"Через режим разработчика (+ патч Xbox)", true);
+    this->rb_GDriveCert = MakeRadio(gd, L"Через сертификат (без Xbox Live)", false);
+    s->Add(this->rb_GDriveDev, 0, wxLEFT | wxRIGHT | wxTOP, 12);
+    s->Add(this->rb_GDriveCert, 0, wxLEFT | wxRIGHT | wxTOP, 12);
+    s->Add(MakeLabel(gd, L"Сборка со встроенным ресурспаком. Выключено —\nофициальная версия с серверов Microsoft", Theme::CARD, true), 0, wxALL, 12);
+    this->chk_GDrive->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&) {
+        bool on = this->chk_GDrive->GetValue();
+        this->rb_GDriveDev->Enable(on);
+        this->rb_GDriveCert->Enable(on);
+    });
+    root->Add(gd, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, 14);
+
     wxPanel* xbox = MakeCard(this->pageSettings, L"XBOX LIVE", s);
     this->chk_KeyPatch = MakeCheck(xbox, L"Патчить ключ Xbox Live (KeyPatcher)");
     s->Add(this->chk_KeyPatch, 0, wxLEFT | wxRIGHT, 12);
@@ -131,7 +155,7 @@ cMain::cMain()
     wxPanel* files = MakeCard(this->pageSettings, L"ФАЙЛЫ", s);
     this->chk_DeleteAppx = MakeCheck(files, L"Удалять .appx после распаковки");
     s->Add(this->chk_DeleteAppx, 0, wxLEFT | wxRIGHT, 12);
-    s->Add(MakeLabel(files, L"Файлы установщика хранятся в скрытой папке\n%LOCALAPPDATA%\\MinecraftInstaller", Theme::CARD, true), 0, wxALL, 12);
+    s->Add(MakeLabel(files, L"Скрытая папка %LOCALAPPDATA%\\MinecraftInstaller", Theme::CARD, true), 0, wxALL, 12);
     this->btn_OpenFolder = new FlatButton(files, ID_OPEN_FOLDER, L"ОТКРЫТЬ ПАПКУ", wxDefaultPosition, wxSize(-1, 36));
     this->btn_OpenFolder->SetFont(Theme::Font(9));
     this->btn_OpenFolder->Bind(wxEVT_BUTTON, [](wxCommandEvent&) { Installer::OpenFolder(Globals::DATA_DIR); });
@@ -237,7 +261,8 @@ void cMain::setStatus(const wxString& msg) {
 void cMain::selectVersion(const VersionInfo& v) {
     this->selected = v;
     bool isDefault = v.name == Globals::DEFAULT_VERSION;
-    this->btn_Version->SetCaption(L"ВЕРСИЯ: " + v.name + (isDefault ? L" ★" : L""));
+    this->btn_Version->SetCaption(L"ВЕРСИЯ: " + v.name + (isDefault ? L" ★" : L"") +
+                                  (this->sourceFor(v) != Source::Official ? L" · ДИСК" : L""));
     this->steps.fill(StepState::Pending);
     this->progress = 0;
     this->stepProgress = 0;
@@ -245,13 +270,40 @@ void cMain::selectVersion(const VersionInfo& v) {
     this->refreshMainButton();
 }
 
+cMain::Source cMain::sourceFor(const VersionInfo& v) const {
+    if (!Globals::GDRIVE_ENABLED || v.name != Globals::DEFAULT_VERSION) return Source::Official;
+    return Globals::GDRIVE_MODE == Globals::GDriveMode::Cert ? Source::GDriveCert : Source::GDriveDev;
+}
+
+namespace {
+std::wstring SignedAppx(const std::wstring& version) { return Versions::Dir(version, Versions::GDRIVE_SIGNED_SUFFIX) + L"\\Minecraft.appx"; }
+std::wstring SignedCer(const std::wstring& version)  { return Versions::Dir(version, Versions::GDRIVE_SIGNED_SUFFIX) + L"\\certificate.cer"; }
+bool Exists(const std::wstring& p) { return GetFileAttributesW(p.c_str()) != INVALID_FILE_ATTRIBUTES; }
+bool SignedReady(const std::wstring& version) {
+    return Exists(Versions::ExtractedMarker(version, Versions::GDRIVE_SIGNED_SUFFIX)) &&
+           Exists(SignedAppx(version)) && Exists(SignedCer(version));
+}
+// Version of the package in the Drive build (1.16.100.4 -> 1.16.10004.0).
+const wchar_t* GDRIVE_PACKAGE_VERSION = L"1.16.10004.0";
+}
+
 void cMain::refreshMainButton() {
-    std::wstring dir = Versions::Dir(this->selected.name);
-    std::wstring registered = Installer::RegisteredLocation();
-    this->playReady = !registered.empty() && _wcsicmp(registered.c_str(), dir.c_str()) == 0;
-    if (this->playReady)                                 this->btn_Main->SetCaption(L"ИГРАТЬ");
-    else if (Versions::IsExtracted(this->selected.name)) this->btn_Main->SetCaption(L"УСТАНОВИТЬ");
-    else                                                 this->btn_Main->SetCaption(L"СКАЧАТЬ");
+    const Source src = this->sourceFor(this->selected);
+    const Installer::PackageState pkg = Installer::Current();
+    bool ready;
+    if (src == Source::GDriveCert) {
+        // The signed build lives in WindowsApps; a Store copy of 1.16.100.4 is no longer possible.
+        this->playReady = pkg.found && !pkg.devMode && pkg.version == GDRIVE_PACKAGE_VERSION;
+        ready = SignedReady(this->selected.name);
+    } else {
+        const std::wstring suffix = src == Source::GDriveDev ? Versions::GDRIVE_SUFFIX : L"";
+        std::wstring dir = Versions::Dir(this->selected.name, suffix);
+        this->playReady = pkg.found && pkg.devMode && _wcsicmp(pkg.location.c_str(), dir.c_str()) == 0;
+        ready = Versions::IsExtracted(this->selected.name, suffix);
+    }
+    if (this->playReady) this->btn_Main->SetCaption(L"ИГРАТЬ");
+    else if (ready)      this->btn_Main->SetCaption(L"УСТАНОВИТЬ");
+    else                 this->btn_Main->SetCaption(L"СКАЧАТЬ");
     this->pageInstall->Refresh();
 }
 
@@ -483,9 +535,15 @@ void cMain::OnMainButton(wxCommandEvent&) {
             this->setStatus(L"Не удалось запустить игру");
         return;
     }
+    this->startInstall(this->sourceFor(this->selected));
+}
+
+void cMain::startInstall(Source src) {
+    if (this->busy.load()) return;
 
     // Registering an unsigned folder requires Developer Mode — check before downloading 300 MB.
-    if (!Installer::IsDeveloperModeEnabled()) {
+    // The signed Drive build (certificate mode) is installed without it.
+    if (src != Source::GDriveCert && !Installer::IsDeveloperModeEnabled()) {
         wxMessageBox(L"Для установки нужен режим разработчика Windows.\n\n"
                      L"Сейчас откроются Параметры → Для разработчиков: включите «Режим разработчика» "
                      L"и нажмите кнопку ещё раз.", L"Нужен режим разработчика", wxOK | wxICON_INFORMATION, this);
@@ -512,7 +570,7 @@ void cMain::OnMainButton(wxCommandEvent&) {
     this->tab_Settings->Enable(false);
     this->pageInstall->Refresh();
 
-    this->worker = std::thread(&cMain::InstallWorker, this, this->selected);
+    this->worker = std::thread(&cMain::InstallWorker, this, this->selected, src);
 }
 
 // Step 1 + 2: Microsoft CDN -> imported_versions\Minecraft_X_x64.appx -> imported_versions\Minecraft_X_x64\.
@@ -606,7 +664,121 @@ bool cMain::DownloadAndExtract(const VersionInfo& v, std::wstring& status) {
     return true;
 }
 
-void cMain::InstallWorker(VersionInfo v) {
+// Google Drive build: <root>\Minecraft_X_x64_gdrive.zip -> (.appx + .cer) -> unpacked folder or signed files.
+bool cMain::DownloadGDrive(const VersionInfo& v, Source src, std::wstring& status, bool& driveFailed) {
+    driveFailed = false;
+    const std::wstring root = Versions::Root();
+    const std::wstring zip = root + L"\\" + Versions::FolderName(v.name, Versions::GDRIVE_SUFFIX) + L".zip";
+    CreateDirectoryW(root.c_str(), nullptr);
+
+    // ---- Step 1: download from Google Drive ----
+    this->postStep(STEP_DOWNLOAD, StepState::Running);
+    ULARGE_INTEGER freeBytes{};
+    if (GetDiskFreeSpaceExW(root.c_str(), &freeBytes, nullptr, nullptr) &&
+        freeBytes.QuadPart < 1500ull * 1024 * 1024) {
+        status = L"Мало места на диске: нужно около 1.5 ГБ, свободно " + FormatSize(freeBytes.QuadPart);
+        this->postStep(STEP_DOWNLOAD, StepState::Failed);
+        return false;
+    }
+
+    this->postStatus(L"Скачиваю сборку " + v.name + L" с Google Диска...");
+    DWORD startTick = GetTickCount(), lastTick = 0;
+    bool ok = Net::DownloadFile(Globals::GDRIVE_URL, zip, [&](uint64_t done, uint64_t total) {
+        DWORD now = GetTickCount();
+        if (now - lastTick < 200 && done < total) return;
+        lastTick = now;
+        double elapsed = (now - startTick) / 1000.0;
+        double speed = elapsed > 0.5 ? done / elapsed : 0.0;
+        std::wstring detail = FormatSize(done) + (total ? L" из " + FormatSize(total) : L"");
+        if (speed > 0 && total > done) {
+            detail += L" · " + FormatSpeed(speed);
+            std::wstring eta = FormatEta((total - done) / speed);
+            if (!eta.empty()) detail += L" · " + eta;
+        }
+        this->postDetail(detail);
+        this->postProgress(Scale(STEP_DOWNLOAD, done, total), Percent(done, total));
+    }, &this->cancel, status);
+    if (!ok) {
+        driveFailed = !this->cancel.load();
+        status = L"загрузка не удалась: " + status;
+        this->postStep(STEP_DOWNLOAD, StepState::Failed);
+        return false;
+    }
+
+    // Drive answers with an HTML page (quota exceeded, file removed, access denied) instead of the zip.
+    char sig[4]{};
+    {
+        std::ifstream f(zip, std::ios::binary);
+        f.read(sig, 4);
+    }
+    if (!(sig[0] == 'P' && sig[1] == 'K' && sig[2] == 3 && sig[3] == 4)) {
+        DeleteFileW(zip.c_str());
+        driveFailed = true;
+        status = L"Google Диск вернул не архив: превышен лимит скачиваний, файл удалён или закрыт доступ";
+        this->postStep(STEP_DOWNLOAD, StepState::Failed);
+        return false;
+    }
+    this->postStep(STEP_DOWNLOAD, StepState::Done);
+    this->postProgress(STEP_TO[STEP_DOWNLOAD], 100);
+
+    // ---- Step 2: unpack ----
+    this->postStep(STEP_EXTRACT, StepState::Running);
+    this->postDetail(L"");
+    std::wstring found;
+    std::error_code ec;
+    auto badArchive = [&](const std::wstring& msg) {
+        DeleteFileW(zip.c_str());
+        driveFailed = !this->cancel.load();
+        status = msg;
+        this->postStep(STEP_EXTRACT, StepState::Failed);
+        return false;
+    };
+
+    if (src == Source::GDriveCert) {
+        const std::wstring dirS = Versions::Dir(v.name, Versions::GDRIVE_SIGNED_SUFFIX);
+        std::filesystem::remove_all(dirS, ec);
+        this->postStatus(L"Достаю пакет и сертификат из архива...");
+        if (!Appx::ExtractEntry(zip, L".appx", SignedAppx(v.name), [&](uint64_t d, uint64_t t) {
+                this->postDetail(FormatSize(d) + L" из " + FormatSize(t));
+                this->postProgress(Scale(STEP_EXTRACT, d, t), Percent(d, t));
+            }, &this->cancel, found, status))
+            return badArchive(L"архив с Google Диска: " + status);
+        if (!Appx::ExtractEntry(zip, L".cer", SignedCer(v.name), nullptr, &this->cancel, found, status))
+            return badArchive(L"архив с Google Диска: " + status);
+        std::ofstream(Versions::ExtractedMarker(v.name, Versions::GDRIVE_SIGNED_SUFFIX)) << "ok";
+    } else {
+        const std::wstring dir = Versions::Dir(v.name, Versions::GDRIVE_SUFFIX);
+        const std::wstring appx = root + L"\\" + Versions::FolderName(v.name, Versions::GDRIVE_SUFFIX) + L".appx";
+        this->postStatus(L"Достаю пакет из архива...");
+        if (!Appx::ExtractEntry(zip, L".appx", appx, [&](uint64_t d, uint64_t t) {
+                this->postDetail(FormatSize(d) + L" из " + FormatSize(t));
+                this->postProgress(Scale(STEP_EXTRACT, d, t * 2), Percent(d, t * 2));
+            }, &this->cancel, found, status))
+            return badArchive(L"архив с Google Диска: " + status);
+        DeleteFileW(zip.c_str());
+
+        this->postStatus(L"Распаковываю в " + dir);
+        std::filesystem::remove_all(L"\\\\?\\" + dir, ec);
+        bool unpacked = Appx::Extract(appx, dir, [&](uint64_t d, uint64_t t) {
+            this->postDetail(FormatSize(d) + L" из " + FormatSize(t));
+            this->postProgress(Scale(STEP_EXTRACT, t + d, t * 2), Percent(t + d, t * 2));
+        }, &this->cancel, status);
+        if (!unpacked) {
+            DeleteFileW(appx.c_str());
+            status = L"Распаковка не удалась: " + status;
+            this->postStep(STEP_EXTRACT, StepState::Failed);
+            return false;
+        }
+        std::ofstream(Versions::ExtractedMarker(v.name, Versions::GDRIVE_SUFFIX)) << "ok";
+        if (Globals::DELETE_APPX) DeleteFileW(appx.c_str());
+    }
+    DeleteFileW(zip.c_str());   // the archive is never kept
+    this->postStep(STEP_EXTRACT, StepState::Done);
+    this->postProgress(STEP_TO[STEP_EXTRACT], 100);
+    return true;
+}
+
+void cMain::InstallWorker(VersionInfo v, Source src) {
     auto finish = [this](const std::wstring& msg, bool ok) {
         this->postStatus(msg);
         this->CallAfter([this, ok] {
@@ -623,25 +795,46 @@ void cMain::InstallWorker(VersionInfo v) {
         finish(msg, false);
     };
 
-    const std::wstring dir = Versions::Dir(v.name);
+    const bool signedBuild = src == Source::GDriveCert;
+    const std::wstring suffix = src == Source::GDriveDev ? Versions::GDRIVE_SUFFIX : L"";
+    const std::wstring dir = Versions::Dir(v.name, suffix);
     std::wstring status;
 
-    // ---- Steps 1-2: download + unpack (skipped when the folder is already complete) ----
-    if (Versions::IsExtracted(v.name)) {
+    // ---- Steps 1-2: download + unpack (skipped when already done) ----
+    bool haveFiles = signedBuild ? SignedReady(v.name) : Versions::IsExtracted(v.name, suffix);
+    if (haveFiles) {
         this->postStep(STEP_DOWNLOAD, StepState::Done);
         this->postStep(STEP_EXTRACT, StepState::Done);
         this->postDetail(L"Версия уже распакована");
         this->postProgress(STEP_TO[STEP_EXTRACT], 100);
-    } else if (!this->DownloadAndExtract(v, status)) {
-        finish(status, false);
-        return;
+    } else if (src == Source::Official) {
+        if (!this->DownloadAndExtract(v, status)) { finish(status, false); return; }
+    } else {
+        bool driveFailed = false;
+        if (!this->DownloadGDrive(v, src, status, driveFailed)) {
+            finish(L"Google Диск: " + status, false);
+            if (driveFailed) {
+                // Offer the official build instead (answer 4).
+                this->CallAfter([this, status] {
+                    int r = wxMessageBox(L"Не удалось получить сборку с Google Диска:\n" + status +
+                                         L"\n\nСкачать официальную версию " + std::wstring(Globals::DEFAULT_VERSION) +
+                                         L" с серверов Microsoft?",
+                                         L"Google Диск недоступен", wxYES_NO | wxICON_WARNING, this);
+                    if (r == wxYES) this->startInstall(Source::Official);
+                });
+            }
+            return;
+        }
     }
 
     // ---- Step 3: KeyPatcher ----
     this->postStep(STEP_PATCH, StepState::Running);
     this->postDetail(L"");
     std::wstring patchNote;
-    if (Globals::APPLY_KEYPATCH) {
+    if (signedBuild) {
+        patchNote = L"Патч Xbox Live пропущен: подписанную сборку нельзя изменять";
+        this->postDetail(patchNote);
+    } else if (Globals::APPLY_KEYPATCH) {
         this->postStatus(L"Ищу Minecraft.Windows.exe...");
         std::wstring exe = KeyPatch::FindExecutable(dir);
         if (exe.empty()) { fail(STEP_PATCH, L"В папке версии не найден Minecraft.Windows.exe"); return; }
@@ -657,39 +850,65 @@ void cMain::InstallWorker(VersionInfo v) {
     this->postStep(STEP_PATCH, StepState::Done);
     this->postProgress(STEP_TO[STEP_PATCH], 100);
 
-    // ---- Step 4: register in Windows (Developer Mode) ----
+    // ---- Step 4: dependencies + register / install ----
     this->postStep(STEP_REGISTER, StepState::Running);
     this->postStatus(L"Проверяю зависимости (VCLibs, Store.Engagement)...");
-    if (!Installer::EnsureDependencies(dir, Versions::Root() + L"\\dependencies",
-            [this](const std::wstring& s) { this->postStatus(s); }, status)) {
-        fail(STEP_REGISTER, L"Зависимости: " + status);
-        return;
+    const std::wstring depsDir = Versions::Root() + L"\\dependencies";
+    auto onStatus = [this](const std::wstring& s) { this->postStatus(s); };
+    auto onProgress = [this](unsigned pct) {
+        this->postProgress(STEP_FROM[STEP_REGISTER] + (int)pct * (STEP_TO[STEP_REGISTER] - STEP_FROM[STEP_REGISTER]) / 100,
+                           (int)pct);
+    };
+
+    bool ok;
+    if (signedBuild) {
+        std::string manifest;
+        if (!Appx::ReadEntry(SignedAppx(v.name), "AppxManifest.xml", manifest, status) ||
+            !Installer::EnsureDependenciesFor(manifest, depsDir, onStatus, status)) {
+            fail(STEP_REGISTER, L"Зависимости: " + status);
+            return;
+        }
+        ok = Installer::InstallSigned(SignedAppx(v.name), SignedCer(v.name), Globals::DATA_DIR + L"\\backups",
+                                      onProgress, onStatus, status);
+        if (ok && Globals::DELETE_APPX) {
+            // Windows keeps its own copy in WindowsApps.
+            std::error_code ec;
+            std::filesystem::remove_all(Versions::Dir(v.name, Versions::GDRIVE_SIGNED_SUFFIX), ec);
+        }
+    } else {
+        if (!Installer::EnsureDependencies(dir, depsDir, onStatus, status)) {
+            fail(STEP_REGISTER, L"Зависимости: " + status);
+            return;
+        }
+        this->postStatus(L"Регистрирую игру в Windows...");
+        ok = Installer::Register(dir, Globals::DATA_DIR + L"\\backups", onProgress, onStatus, status);
     }
-    this->postStatus(L"Регистрирую игру в Windows...");
-    bool ok = Installer::Register(dir, Globals::DATA_DIR + L"\\backups",
-        [this](unsigned pct) {
-            this->postProgress(STEP_FROM[STEP_REGISTER] + (int)pct * (STEP_TO[STEP_REGISTER] - STEP_FROM[STEP_REGISTER]) / 100,
-                               (int)pct);
-        },
-        [this](const std::wstring& s) { this->postStatus(s); },
-        status);
     if (!ok) { fail(STEP_REGISTER, status); return; }
     this->postStep(STEP_REGISTER, StepState::Done);
     this->postProgress(100, 100);
     this->postDetail(patchNote);
 
-    finish(L"Готово! Minecraft " + v.name + L" установлен.\n" + patchNote +
-           (status == L"Игра зарегистрирована" ? L"" : L"\n" + status), true);
+    std::wstring from = src == Source::Official ? L"" : L" (сборка с Google Диска)";
+    bool plain = status == L"Игра зарегистрирована" || status == L"Игра установлена";
+    finish(L"Готово! Minecraft " + v.name + from + L" установлен.\n" + patchNote +
+           (plain ? L"" : L"\n" + status), true);
 }
 
 // --------------------------------------------------------------------------- settings
 void cMain::fillSettings() {
+    this->chk_GDrive->SetValue(Globals::GDRIVE_ENABLED);
+    this->rb_GDriveDev->SetValue(Globals::GDRIVE_MODE == Globals::GDriveMode::Dev);
+    this->rb_GDriveCert->SetValue(Globals::GDRIVE_MODE == Globals::GDriveMode::Cert);
+    this->rb_GDriveDev->Enable(Globals::GDRIVE_ENABLED);
+    this->rb_GDriveCert->Enable(Globals::GDRIVE_ENABLED);
     this->chk_KeyPatch->SetValue(Globals::APPLY_KEYPATCH);
     this->chk_DeleteAppx->SetValue(Globals::DELETE_APPX);
     this->txt_VersionsUrl->SetValue(Globals::VERSIONS_URL);
 }
 
 void cMain::OnSave(wxCommandEvent&) {
+    Globals::GDRIVE_ENABLED = this->chk_GDrive->GetValue();
+    Globals::GDRIVE_MODE = this->rb_GDriveCert->GetValue() ? Globals::GDriveMode::Cert : Globals::GDriveMode::Dev;
     Globals::APPLY_KEYPATCH = this->chk_KeyPatch->GetValue();
     Globals::DELETE_APPX = this->chk_DeleteAppx->GetValue();
     wxString url = this->txt_VersionsUrl->GetValue().Strip(wxString::both);
@@ -697,6 +916,7 @@ void cMain::OnSave(wxCommandEvent&) {
 
     this->cfg.save();
     this->fillSettings();
+    this->selectVersion(this->selected);   // source may have changed
     this->setStatus(L"Настройки сохранены");
     this->ShowPage(false);
 }

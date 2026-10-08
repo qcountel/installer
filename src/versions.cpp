@@ -64,24 +64,24 @@ std::wstring Root() {
     return Globals::DATA_DIR + L"\\" + Globals::VERSIONS_DIR_NAME;
 }
 
-std::wstring FolderName(const std::wstring& version) {
+std::wstring FolderName(const std::wstring& version, const std::wstring& suffix) {
     std::wstring v = version;
     size_t dot = v.find_last_of(L'.');
     if (dot != std::wstring::npos && v.size() - dot - 1 == 1) v.insert(dot + 1, L"0");
-    return L"Minecraft_" + v + L"_x64";
+    return L"Minecraft_" + v + L"_x64" + suffix;
 }
 
-std::wstring Dir(const std::wstring& version) {
-    return Root() + L"\\" + FolderName(version);
+std::wstring Dir(const std::wstring& version, const std::wstring& suffix) {
+    return Root() + L"\\" + FolderName(version, suffix);
 }
 
-std::wstring ExtractedMarker(const std::wstring& version) {
-    return Dir(version) + L"\\.installer_extracted";
+std::wstring ExtractedMarker(const std::wstring& version, const std::wstring& suffix) {
+    return Dir(version, suffix) + L"\\.installer_extracted";
 }
 
-bool IsExtracted(const std::wstring& version) {
-    return GetFileAttributesW(ExtractedMarker(version).c_str()) != INVALID_FILE_ATTRIBUTES &&
-           GetFileAttributesW((Dir(version) + L"\\AppxManifest.xml").c_str()) != INVALID_FILE_ATTRIBUTES;
+bool IsExtracted(const std::wstring& version, const std::wstring& suffix) {
+    return GetFileAttributesW(ExtractedMarker(version, suffix).c_str()) != INVALID_FILE_ATTRIBUTES &&
+           GetFileAttributesW((Dir(version, suffix) + L"\\AppxManifest.xml").c_str()) != INVALID_FILE_ATTRIBUTES;
 }
 
 std::wstring Major(const std::wstring& version) {

@@ -50,6 +50,8 @@ bool Config::save() const {
     f << "# Minecraft Installer config (UTF-8)\n";
     f << "deleteAppx=" << (Globals::DELETE_APPX ? "true" : "false") << "\n";
     f << "keyPatch=" << (Globals::APPLY_KEYPATCH ? "true" : "false") << "\n";
+    f << "gdrive=" << (Globals::GDRIVE_ENABLED ? "true" : "false") << "\n";
+    f << "gdriveMode=" << (Globals::GDRIVE_MODE == Globals::GDriveMode::Cert ? "cert" : "dev") << "\n";
     f << "versionsUrl=" << WideToUtf8(Globals::VERSIONS_URL) << "\n";
     return true;
 }
@@ -58,5 +60,7 @@ void Config::apply(const std::wstring& key, const std::wstring& val) {
     auto yes = [&] { return val == L"true" || val == L"1"; };
     if (key == L"deleteAppx")        Globals::DELETE_APPX = yes();
     else if (key == L"keyPatch")     Globals::APPLY_KEYPATCH = yes();
+    else if (key == L"gdrive")       Globals::GDRIVE_ENABLED = yes();
+    else if (key == L"gdriveMode")   Globals::GDRIVE_MODE = (val == L"cert") ? Globals::GDriveMode::Cert : Globals::GDriveMode::Dev;
     else if (key == L"versionsUrl")  { if (!val.empty()) Globals::VERSIONS_URL = val; }
 }

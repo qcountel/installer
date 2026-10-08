@@ -9,10 +9,14 @@
 #include <thread>
 #include <vector>
 #include <wx/checkbox.h>
+#include <wx/radiobut.h>
 
 class cMain : public wxFrame {
 public:
     enum class StepState { Pending, Running, Done, Failed };
+    // Where the selected version comes from.
+    enum class Source { Official, GDriveDev, GDriveCert };
+
     enum Step { STEP_DOWNLOAD = 0, STEP_EXTRACT, STEP_PATCH, STEP_REGISTER, STEP_COUNT };
 
     // Tab headers
@@ -29,6 +33,9 @@ public:
     wxStaticText* lbl_Status = nullptr;
 
     // Settings page
+    wxCheckBox*   chk_GDrive = nullptr;
+    wxRadioButton* rb_GDriveDev = nullptr;
+    wxRadioButton* rb_GDriveCert = nullptr;
     wxCheckBox*   chk_KeyPatch = nullptr;
     wxCheckBox*   chk_DeleteAppx = nullptr;
     wxTextCtrl*   txt_VersionsUrl = nullptr;
@@ -69,8 +76,13 @@ public:
 
     // Install
     void OnMainButton(wxCommandEvent& evt);
-    void InstallWorker(VersionInfo v);
+    Source sourceFor(const VersionInfo& v) const;
+    void startInstall(Source src);
+    void InstallWorker(VersionInfo v, Source src);
     bool DownloadAndExtract(const VersionInfo& v, std::wstring& status);
+    // Google Drive build: download the zip and unpack it for the given mode.
+    // driveFailed = the problem is on the Drive side (offer the official build instead).
+    bool DownloadGDrive(const VersionInfo& v, Source src, std::wstring& status, bool& driveFailed);
     void postStatus(const std::wstring& msg);
     void postStep(Step step, StepState st);
     void postProgress(int overall, int step);

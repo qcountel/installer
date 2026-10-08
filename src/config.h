@@ -29,6 +29,18 @@ namespace Globals {
     // Patch Minecraft.Windows.exe with the new Xbox Live public key (KeyPatcher).
     inline bool APPLY_KEYPATCH = true;
 
+    // ---- Custom 1.16.100.4 build from Google Drive (zip: .appx with a built-in resource pack + .cer) ----
+    // Settings -> "Скачивание с Google Дисков". Default ON; applies to 1.16.100.4 only.
+    inline bool GDRIVE_ENABLED = true;
+    inline std::wstring GDRIVE_URL{
+        L"https://drive.usercontent.google.com/download?id=1pkiVyhJfzhSi_fsiyjLJlUdCKttR685g&export=download&confirm=t" };
+    // How the Drive build is installed:
+    //   Dev  — unpack + register in Developer Mode (no certificate, KeyPatcher works)  [default]
+    //   Cert — trust the bundled certificate and install the signed .appx (no Developer Mode,
+    //          but Minecraft.Windows.exe cannot be patched, so Xbox Live sign-in will not work)
+    enum class GDriveMode { Dev, Cert };
+    inline GDriveMode GDRIVE_MODE = GDriveMode::Dev;
+
     // Folder inside DATA_DIR where versions are unpacked, like MCLauncher's imported_versions.
     inline const wchar_t* VERSIONS_DIR_NAME = L"imported_versions";
 

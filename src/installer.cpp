@@ -9,6 +9,7 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <wincrypt.h>
 #include <tlhelp32.h>
 
 #include <winrt/Windows.Foundation.h>
@@ -37,6 +38,7 @@
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "windowsapp.lib")
+#pragma comment(lib, "crypt32.lib")
 
 using namespace winrt;
 using namespace winrt::Windows::Foundation;
@@ -58,11 +60,12 @@ std::wstring Hex(HRESULT hr) {
 
 std::wstring Hint(HRESULT hr) {
     switch ((unsigned)hr) {
-    case 0x80073CFF: return L"включите режим разработчика: Параметры → Для разработчиков";
+    case 0x80073CFF: return L"Windows запрещает такую установку: включите режим разработчика (Параметры → Для разработчиков)";
     case 0x80073CF3: return L"не хватает зависимостей (Microsoft.VCLibs / Store.Engagement) или конфликт версий";
     case 0x80073CFB: return L"уже установлен пакет той же версии из другой папки — удалите его";
     case 0x80073D02: return L"игра сейчас запущена — закройте её";
     case 0x80073D06: return L"для другого пользователя установлена более новая версия Minecraft";
+    case 0x800B0109: return L"сертификат сборки не доверенный — его не удалось добавить в систему";
     case 0x80073CF9: return L"установка не удалась (нет места на диске или ошибка Windows)";
     case 0x80070005: return L"нет доступа — запустите установщик от имени администратора";
     case 0x80070003: return L"путь не найден — папка версии повреждена, удалите её и скачайте снова";
@@ -232,6 +235,64 @@ uint64_t FileSize(const std::wstring& path) {
     return ((uint64_t)a.nFileSizeHigh << 32) | a.nFileSizeLow;
 }
 
+
+// Removes the Minecraft package currently installed for this user, unless it already points at
+// keepLocation (then `already` is set). A Store / signed install is removed together with its data,
+// so its worlds are copied to backupRoot first (restoreFrom receives the copy).
+bool RemoveCurrent(PackageManager& pm, const std::wstring& keepLocation, const std::wstring& backupRoot,
+                   const std::function<void(unsigned)>& onProgress,
+                   const std::function<void(const std::wstring&)>& onStatus,
+                   std::wstring& restoreFrom, bool& already, std::wstring& status) {
+    already = false;
+    for (auto const& pkg : pm.FindPackagesForUser(winrt::hstring{}, Globals::PACKAGE_FAMILY)) {
+        std::wstring location;
+        try { location = pkg.InstalledLocation().Path().c_str(); } catch (...) {}
+        if (!keepLocation.empty() && SamePath(location, keepLocation)) { already = true; return true; }
+
+        if (!pkg.IsDevelopmentMode()) {
+            std::wstring worlds = StoreWorldsDir();
+            std::error_code ec;
+            if (fs::exists(LongPath(worlds), ec)) {
+                std::wstring backup = backupRoot + L"\\com.mojang_" + Timestamp();
+                if (onStatus) onStatus(L"Сохраняю миры и настройки в " + backup + L"...");
+                if (!CopyTree(worlds, backup, status)) return false;
+                restoreFrom = backup;
+            }
+            if (onStatus) onStatus(L"Удаляю текущий Minecraft (миры сохранены)...");
+            if (!Wait(pm.RemovePackageAsync(pkg.Id().FullName()), onProgress, status)) {
+                status = L"Не удалось удалить текущий Minecraft: " + status;
+                return false;
+            }
+        } else {
+            // Another unpacked version: its data stays in place.
+            if (onStatus) onStatus(L"Отключаю предыдущую версию...");
+            if (!Wait(pm.RemovePackageAsync(pkg.Id().FullName(), RemovalOptions::PreserveApplicationData),
+                      onProgress, status)) {
+                status = L"Не удалось отключить предыдущую версию: " + status;
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+// Copies backed-up worlds into the freshly installed package; appends a note to status on failure.
+void RestoreWorlds(const std::wstring& restoreFrom,
+                   const std::function<void(const std::wstring&)>& onStatus, std::wstring& status) {
+    if (restoreFrom.empty()) return;
+    if (onStatus) onStatus(L"Возвращаю миры и настройки...");
+    try {
+        auto data = winrt::Windows::Management::Core::ApplicationDataManager::CreateForPackageFamily(
+            Globals::PACKAGE_FAMILY);
+        std::wstring target = std::wstring(data.LocalFolder().Path().c_str()) + L"\\games\\com.mojang";
+        std::wstring err;
+        if (!CopyTree(restoreFrom, target, err))
+            status += L"\nМиры не вернулись: " + err + L"\nКопия: " + restoreFrom;
+    } catch (winrt::hresult_error const& e) {
+        status += L"\nМиры не вернулись (" + Hex(e.code()) + L")\nКопия: " + restoreFrom;
+    }
+}
+
 } // namespace
 
 namespace Installer {
@@ -275,14 +336,19 @@ bool IsGameRunning() {
 bool EnsureDependencies(const std::wstring& gameDir, const std::wstring& depsDir,
                         const std::function<void(const std::wstring&)>& onStatus,
                         std::wstring& status) {
-    EnsureApartment();
     std::string manifest;
     {
         std::ifstream f(fs::path(LongPath(gameDir + L"\\AppxManifest.xml")), std::ios::binary);
         if (!f) { status = L"в папке версии нет AppxManifest.xml — удалите папку и скачайте снова"; return false; }
         std::ostringstream ss; ss << f.rdbuf(); manifest = ss.str();
     }
+    return EnsureDependenciesFor(manifest, depsDir, onStatus, status);
+}
 
+bool EnsureDependenciesFor(const std::string& manifest, const std::wstring& depsDir,
+                           const std::function<void(const std::wstring&)>& onStatus,
+                           std::wstring& status) {
+    EnsureApartment();
     try {
         PackageManager pm;
         for (const Framework& fw : FRAMEWORKS) {
@@ -333,6 +399,24 @@ bool EnsureDependencies(const std::wstring& gameDir, const std::wstring& depsDir
     return true;
 }
 
+PackageState Current() {
+    EnsureApartment();
+    PackageState st;
+    try {
+        PackageManager pm;
+        for (auto const& pkg : pm.FindPackagesForUser(winrt::hstring{}, Globals::PACKAGE_FAMILY)) {
+            st.found = true;
+            try { st.location = pkg.InstalledLocation().Path().c_str(); } catch (...) {}
+            try { st.devMode = pkg.IsDevelopmentMode(); } catch (...) {}
+            auto v = pkg.Id().Version();
+            st.version = std::to_wstring(v.Major) + L"." + std::to_wstring(v.Minor) + L"." +
+                         std::to_wstring(v.Build) + L"." + std::to_wstring(v.Revision);
+            break;
+        }
+    } catch (...) {}
+    return st;
+}
+
 bool Register(const std::wstring& gameDir, const std::wstring& backupRoot,
               const std::function<void(unsigned)>& onProgress,
               const std::function<void(const std::wstring&)>& onStatus,
@@ -347,39 +431,9 @@ bool Register(const std::wstring& gameDir, const std::wstring& backupRoot,
     std::wstring restoreFrom;
     try {
         PackageManager pm;
-        for (auto const& pkg : pm.FindPackagesForUser(winrt::hstring{}, Globals::PACKAGE_FAMILY)) {
-            std::wstring location;
-            try { location = pkg.InstalledLocation().Path().c_str(); } catch (...) {}
-            if (SamePath(location, gameDir)) {
-                status = L"Эта версия уже зарегистрирована";
-                return true;
-            }
-
-            if (!pkg.IsDevelopmentMode()) {
-                // A Store install: removing it deletes its data, so copy the worlds out first.
-                std::wstring worlds = StoreWorldsDir();
-                std::error_code ec;
-                if (fs::exists(LongPath(worlds), ec)) {
-                    std::wstring backup = backupRoot + L"\\com.mojang_" + Timestamp();
-                    if (onStatus) onStatus(L"Сохраняю миры и настройки в " + backup + L"...");
-                    if (!CopyTree(worlds, backup, status)) return false;
-                    restoreFrom = backup;
-                }
-                if (onStatus) onStatus(L"Удаляю Minecraft из Store (миры сохранены)...");
-                if (!Wait(pm.RemovePackageAsync(pkg.Id().FullName()), onProgress, status)) {
-                    status = L"Не удалось удалить текущий Minecraft: " + status;
-                    return false;
-                }
-            } else {
-                // Another unpacked version: its data stays in place.
-                if (onStatus) onStatus(L"Отключаю предыдущую версию...");
-                if (!Wait(pm.RemovePackageAsync(pkg.Id().FullName(), RemovalOptions::PreserveApplicationData),
-                          onProgress, status)) {
-                    status = L"Не удалось отключить предыдущую версию: " + status;
-                    return false;
-                }
-            }
-        }
+        bool already = false;
+        if (!RemoveCurrent(pm, gameDir, backupRoot, onProgress, onStatus, restoreFrom, already, status)) return false;
+        if (already) { status = L"Эта версия уже зарегистрирована"; return true; }
 
         if (onStatus) onStatus(L"Регистрирую игру в Windows...");
         Uri uri{ winrt::hstring(PathToFileUri(manifest)) };
@@ -395,24 +449,70 @@ bool Register(const std::wstring& gameDir, const std::wstring& backupRoot,
         return false;
     }
 
-    if (!restoreFrom.empty()) {
-        if (onStatus) onStatus(L"Возвращаю миры и настройки...");
-        try {
-            auto data = winrt::Windows::Management::Core::ApplicationDataManager::CreateForPackageFamily(
-                Globals::PACKAGE_FAMILY);
-            std::wstring target = std::wstring(data.LocalFolder().Path().c_str()) + L"\\games\\com.mojang";
-            std::wstring err;
-            if (!CopyTree(restoreFrom, target, err)) {
-                status = L"Игра установлена, но миры не вернулись: " + err + L"\nКопия: " + restoreFrom;
-                return true;
-            }
-        } catch (winrt::hresult_error const& e) {
-            status = L"Игра установлена, но миры не вернулись (" + Hex(e.code()) + L")\nКопия: " + restoreFrom;
-            return true;
+    status = L"Игра зарегистрирована";
+    RestoreWorlds(restoreFrom, onStatus, status);
+    return true;
+}
+
+bool AddTrustedCertificate(const std::wstring& cerPath, std::wstring& status) {
+    std::string data;
+    {
+        std::ifstream f(fs::path(cerPath), std::ios::binary);
+        if (!f) { status = L"не удалось открыть сертификат"; return false; }
+        std::ostringstream ss; ss << f.rdbuf(); data = ss.str();
+    }
+    // .cer is usually DER; accept Base64/PEM too.
+    std::vector<BYTE> der(data.begin(), data.end());
+    if (data.rfind("-----BEGIN", 0) == 0 || (data.size() > 2 && data[0] == 'M' && data[1] == 'I')) {
+        DWORD n = 0;
+        if (CryptStringToBinaryA(data.c_str(), (DWORD)data.size(), CRYPT_STRING_BASE64_ANY, nullptr, &n, nullptr, nullptr)) {
+            der.resize(n);
+            CryptStringToBinaryA(data.c_str(), (DWORD)data.size(), CRYPT_STRING_BASE64_ANY, der.data(), &n, nullptr, nullptr);
         }
     }
 
-    status = L"Игра зарегистрирована";
+    // Local Machine \ Trusted People: what Windows checks for sideloaded (self-signed) packages.
+    HCERTSTORE store = CertOpenStore(CERT_STORE_PROV_SYSTEM_W, 0, 0,
+                                     CERT_SYSTEM_STORE_LOCAL_MACHINE, L"TrustedPeople");
+    if (!store) { status = L"нет доступа к хранилищу сертификатов (" + Hex(HRESULT_FROM_WIN32(GetLastError())) + L")"; return false; }
+    BOOL ok = CertAddEncodedCertificateToStore(store, X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
+                                               der.data(), (DWORD)der.size(), CERT_STORE_ADD_REPLACE_EXISTING, nullptr);
+    DWORD err = GetLastError();
+    CertCloseStore(store, 0);
+    if (!ok) { status = L"сертификат не принят Windows (" + Hex(HRESULT_FROM_WIN32(err)) + L")"; return false; }
+    return true;
+}
+
+bool InstallSigned(const std::wstring& appxPath, const std::wstring& cerPath, const std::wstring& backupRoot,
+                   const std::function<void(unsigned)>& onProgress,
+                   const std::function<void(const std::wstring&)>& onStatus,
+                   std::wstring& status) {
+    EnsureApartment();
+    if (onStatus) onStatus(L"Добавляю сертификат сборки в «Доверенные лица» (локальный компьютер)...");
+    if (!AddTrustedCertificate(cerPath, status)) { status = L"Сертификат: " + status; return false; }
+
+    std::wstring restoreFrom;
+    try {
+        PackageManager pm;
+        bool already = false;
+        if (!RemoveCurrent(pm, L"", backupRoot, onProgress, onStatus, restoreFrom, already, status)) return false;
+
+        if (onStatus) onStatus(L"Устанавливаю подписанную сборку...");
+        Uri uri{ winrt::hstring(PathToFileUri(appxPath)) };
+        if (!Wait(pm.AddPackageAsync(uri, nullptr, DeploymentOptions::ForceApplicationShutdown), onProgress, status)) {
+            status = L"Ошибка установки " + status +
+                     (restoreFrom.empty() ? L"" : L"\nМиры сохранены в " + restoreFrom);
+            return false;
+        }
+    } catch (winrt::hresult_error const& e) {
+        std::wstring hint = Hint(e.code());
+        status = L"Ошибка установки " + Hex(e.code()) + L": " +
+                 (hint.empty() ? std::wstring(e.message().c_str()) : hint);
+        return false;
+    }
+
+    status = L"Игра установлена";
+    RestoreWorlds(restoreFrom, onStatus, status);
     return true;
 }
 

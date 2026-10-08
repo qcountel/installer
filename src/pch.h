@@ -8,6 +8,7 @@
 #include <wx/taskbar.h>
 #include <wx/notifmsg.h>
 #include <wx/checkbox.h>
+#include <wx/radiobut.h>
 #include <wx/menu.h>
 #include <wx/statbox.h>
 #include <wx/mstream.h>

@@ -12,6 +12,15 @@ namespace Installer {
     bool IsDeveloperModeEnabled();
     void OpenDeveloperSettings();
 
+    // Minecraft (UWP) package currently installed for this user.
+    struct PackageState {
+        bool found = false;
+        bool devMode = false;       // registered unpacked folder (Developer Mode)
+        std::wstring location;
+        std::wstring version;       // e.g. "1.16.10004.0"
+    };
+    PackageState Current();
+
     // Folder of the Minecraft (UWP) package registered for the current user, empty if none.
     std::wstring RegisteredLocation();
 
@@ -25,12 +34,25 @@ namespace Installer {
                             const std::function<void(const std::wstring&)>& onStatus,
                             std::wstring& status);
 
+    // Same check for a manifest that is already in memory (e.g. read from a signed .appx).
+    bool EnsureDependenciesFor(const std::string& manifest, const std::wstring& depsDir,
+                               const std::function<void(const std::wstring&)>& onStatus,
+                               std::wstring& status);
+
     // Registers gameDir. If a Store copy is installed, its worlds (LocalState\games\com.mojang)
     // are copied to backupRoot first and restored into the new registration.
     bool Register(const std::wstring& gameDir, const std::wstring& backupRoot,
                   const std::function<void(unsigned)>& onProgress,
                   const std::function<void(const std::wstring&)>& onStatus,
                   std::wstring& status);
+
+    // Installs a signed .appx (the Google Drive build): its certificate goes to
+    // Local Machine\Trusted People, the current Minecraft is removed (worlds backed up and restored)
+    // and the package is added normally — Developer Mode is not needed.
+    bool InstallSigned(const std::wstring& appxPath, const std::wstring& cerPath, const std::wstring& backupRoot,
+                       const std::function<void(unsigned)>& onProgress,
+                       const std::function<void(const std::wstring&)>& onStatus,
+                       std::wstring& status);
 
     // Starts the registered game.
     bool Launch();
