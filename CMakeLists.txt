@@ -36,6 +36,8 @@ FetchContent_MakeAvailable(miniz)   # the release zip has no CMakeLists.txt: thi
 add_library(miniz STATIC "${miniz_SOURCE_DIR}/miniz.c")
 target_include_directories(miniz PUBLIC "${miniz_SOURCE_DIR}")
 target_compile_definitions(miniz PUBLIC MINIZ_NO_STDIO MINIZ_NO_TIME MINIZ_NO_ZLIB_COMPATIBLE_NAMES)
+# Keep miniz.lib out of the folder with the .exe.
+set_target_properties(miniz PROPERTIES ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 
 # The icon is stored in git as Base64 text; decode it once at configure time.
 set(ICON_ICO "${CMAKE_SOURCE_DIR}/src/icon/icon.ico")

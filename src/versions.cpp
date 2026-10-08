@@ -61,7 +61,7 @@ bool Parse(const std::string& body, std::vector<VersionInfo>& out) {
 namespace Versions {
 
 std::wstring Root() {
-    return Globals::EXE_DIR + L"\\" + Globals::VERSIONS_DIR_NAME;
+    return Globals::DATA_DIR + L"\\" + Globals::VERSIONS_DIR_NAME;
 }
 
 std::wstring FolderName(const std::wstring& version) {

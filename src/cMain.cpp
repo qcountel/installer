@@ -131,10 +131,10 @@ cMain::cMain()
     wxPanel* files = MakeCard(this->pageSettings, L"ФАЙЛЫ", s);
     this->chk_DeleteAppx = MakeCheck(files, L"Удалять .appx после распаковки");
     s->Add(this->chk_DeleteAppx, 0, wxLEFT | wxRIGHT, 12);
-    s->Add(MakeLabel(files, L"Версии распаковываются в папку imported_versions\nрядом с установщиком", Theme::CARD, true), 0, wxALL, 12);
-    this->btn_OpenFolder = new FlatButton(files, ID_OPEN_FOLDER, L"ОТКРЫТЬ ПАПКУ ВЕРСИЙ", wxDefaultPosition, wxSize(-1, 36));
+    s->Add(MakeLabel(files, L"Файлы установщика хранятся в скрытой папке\n%LOCALAPPDATA%\\MinecraftInstaller", Theme::CARD, true), 0, wxALL, 12);
+    this->btn_OpenFolder = new FlatButton(files, ID_OPEN_FOLDER, L"ОТКРЫТЬ ПАПКУ", wxDefaultPosition, wxSize(-1, 36));
     this->btn_OpenFolder->SetFont(Theme::Font(9));
-    this->btn_OpenFolder->Bind(wxEVT_BUTTON, [](wxCommandEvent&) { Installer::OpenFolder(Versions::Root()); });
+    this->btn_OpenFolder->Bind(wxEVT_BUTTON, [](wxCommandEvent&) { Installer::OpenFolder(Globals::DATA_DIR); });
     s->Add(this->btn_OpenFolder, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 12);
     root->Add(files, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, 14);
 
@@ -666,7 +666,7 @@ void cMain::InstallWorker(VersionInfo v) {
         return;
     }
     this->postStatus(L"Регистрирую игру в Windows...");
-    bool ok = Installer::Register(dir, Globals::EXE_DIR + L"\\backups",
+    bool ok = Installer::Register(dir, Globals::DATA_DIR + L"\\backups",
         [this](unsigned pct) {
             this->postProgress(STEP_FROM[STEP_REGISTER] + (int)pct * (STEP_TO[STEP_REGISTER] - STEP_FROM[STEP_REGISTER]) / 100,
                                (int)pct);

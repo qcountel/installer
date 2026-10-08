@@ -17,10 +17,10 @@ namespace Versions {
     // "1.16.100.4" -> "Minecraft_1.16.100.04_x64" (the build number is padded to 2 digits).
     std::wstring FolderName(const std::wstring& version);
 
-    // <exe dir>\imported_versions
+    // <DATA_DIR>\imported_versions
     std::wstring Root();
 
-    // <exe dir>\imported_versions\Minecraft_1.16.100.04_x64
+    // <DATA_DIR>\imported_versions\Minecraft_1.16.100.04_x64
     std::wstring Dir(const std::wstring& version);
 
     // Marker written after a successful unpack; its presence means the folder is complete.

@@ -5,8 +5,13 @@
 
 namespace Globals {
 
-    // Folder that contains the installer .exe (config and imported_versions live here).
+    // Folder that contains the installer .exe.
     inline std::wstring EXE_DIR{};
+
+    // Hidden + system folder with everything the installer creates (config, versions, backups),
+    // so only the .exe stays visible: %LOCALAPPDATA%\MinecraftInstaller.
+    inline std::wstring DATA_DIR{};
+    inline const wchar_t* DATA_DIR_NAME = L"MinecraftInstaller";
 
     // ---- Default version: always preselected on start, available even when the online list is down ----
     inline const wchar_t* DEFAULT_VERSION   = L"1.16.100.4";
@@ -24,7 +29,7 @@ namespace Globals {
     // Patch Minecraft.Windows.exe with the new Xbox Live public key (KeyPatcher).
     inline bool APPLY_KEYPATCH = true;
 
-    // Folder (next to the exe) where versions are unpacked, like MCLauncher's imported_versions.
+    // Folder inside DATA_DIR where versions are unpacked, like MCLauncher's imported_versions.
     inline const wchar_t* VERSIONS_DIR_NAME = L"imported_versions";
 
     // Minecraft for Windows 10 (UWP) package identity.

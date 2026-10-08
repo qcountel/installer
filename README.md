@@ -14,7 +14,7 @@
    [MCLauncher](https://github.com/MCMrARM/mc-w10-version-launcher): SOAP-запрос
    `GetExtendedUpdateInfo2` по UpdateID из базы версий) и скачивает пакет. Для 1.16.100.4
    дополнительно проверяется размер и SHA-256.
-2. **Распаковка** — в `<папка с exe>\imported_versions\Minecraft_1.16.100.04_x64`
+2. **Распаковка** — в скрытую папку `%LOCALAPPDATA%\MinecraftInstaller\imported_versions\Minecraft_1.16.100.04_x64`
    (файл `AppxSignature.p7x` пропускается, чтобы пакет можно было зарегистрировать в режиме разработчика).
 3. **Патч Xbox Live** — встроенный KeyPatcher заменяет публичный ключ в `Minecraft.Windows.exe`,
    чтобы работал вход в Xbox Live (можно отключить в настройках).
@@ -37,10 +37,13 @@
 
 - Установленный из Microsoft Store Minecraft (`Microsoft.MinecraftUWP`) будет **заменён**:
   в Windows может быть только одна версия этого пакета. Перед удалением миры
-  (`LocalState\games\com.mojang`) копируются в `<папка с exe>\backups\com.mojang_<дата>`
+  (`LocalState\games\com.mojang`) копируются в `%LOCALAPPDATA%\MinecraftInstaller\backups\com.mojang_<дата>`
   и восстанавливаются после регистрации.
 - Перед установкой игру нужно закрыть.
-- Список версий кэшируется в `imported_versions\versions_cache.json`.
+- Рядом с установщиком ничего не создаётся: настройки, версии, зависимости и бэкапы лежат в
+  `%LOCALAPPDATA%\MinecraftInstaller` (атрибуты «скрытый» + «системный», поэтому папку не видно
+  даже при включённом показе скрытых файлов). Открыть её можно кнопкой в «Настройках».
+  Файлы, оставшиеся рядом с exe от старых сборок, переносятся туда автоматически.
 
 ## Сборка
 
@@ -57,6 +60,7 @@ cmake -B build -A x64 -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 cmake --build build --config Release
 ```
 
+`build.bat` кладёт готовый файл в `dist\Minecraft Installer.exe` — его одного достаточно.
 wxWidgets 3.2.6 и miniz 3.0.2 скачиваются автоматически через FetchContent.
 
 ## Благодарности и лицензия

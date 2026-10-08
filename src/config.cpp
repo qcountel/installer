@@ -1,7 +1,7 @@
 #include "pch.h"
 #include "config.h"
 
-// Config is stored as UTF-8 text next to the installer so Cyrillic paths survive.
+// Config is stored as UTF-8 text in Globals::DATA_DIR so Cyrillic paths survive.
 
 static std::wstring Utf8ToWide(const std::string& s) {
     if (s.empty()) return {};
@@ -20,7 +20,7 @@ static std::string WideToUtf8(const std::wstring& w) {
 }
 
 Config::Config() {
-    this->path = Globals::EXE_DIR + L"\\config.txt";
+    this->path = Globals::DATA_DIR + L"\\config.txt";
 }
 
 bool Config::load() {

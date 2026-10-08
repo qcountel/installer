@@ -27,7 +27,12 @@ echo Building (Release)... first build downloads and compiles wxWidgets, it take
 if errorlevel 1 goto fail
 
 echo.
-echo Done: build\Release\Minecraft Installer.exe
+REM Only the installer itself goes to dist\ (no .lib/.pdb next to it)
+if exist dist rd /s /q dist
+mkdir dist
+copy /y "build\Release\Minecraft Installer.exe" "dist\" >nul
+
+echo Done: dist\Minecraft Installer.exe
 pause
 exit /b 0
 
