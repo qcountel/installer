@@ -82,7 +82,9 @@ public:
         top->Add(new wxStaticBitmap(this, wxID_ANY, KindIcon(kind)), 0, wxLEFT | wxTOP | wxRIGHT, 20);
 
         wxBoxSizer* col = new wxBoxSizer(wxVERTICAL);
-        wxStaticText* heading = new wxStaticText(this, wxID_ANY, title.Upper());
+        std::wstring upper = title.ToStdWstring();
+        CharUpperBuffW(upper.data(), (DWORD)upper.size());   // also handles Cyrillic
+        wxStaticText* heading = new wxStaticText(this, wxID_ANY, upper);
         heading->SetFont(Theme::Font(10));
         heading->SetForegroundColour(Theme::FG);
         heading->SetBackgroundColour(Theme::BG);
