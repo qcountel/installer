@@ -17,13 +17,21 @@
 #include <winrt/Windows.Management.Core.h>
 #include <winrt/Windows.Management.Deployment.h>
 #include <winrt/Windows.Storage.h>
+#include <winrt/Windows.System.h>
 
 #include <chrono>
+#include <cstdint>
+#include <cstdio>
 #include <ctime>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <vector>
 
 #include "installer.h"
 #include "config.h"
+#include "net.h"
+#include "wu.h"
 
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "ole32.lib")
@@ -51,7 +59,7 @@ std::wstring Hex(HRESULT hr) {
 std::wstring Hint(HRESULT hr) {
     switch ((unsigned)hr) {
     case 0x80073CFF: return L"включите режим разработчика: Параметры → Для разработчиков";
-    case 0x80073CF3: return L"не хватает зависимостей (Microsoft.VCLibs) или конфликт версий";
+    case 0x80073CF3: return L"не хватает зависимостей (Microsoft.VCLibs / Store.Engagement) или конфликт версий";
     case 0x80073CFB: return L"уже установлен пакет той же версии из другой папки — удалите его";
     case 0x80073D02: return L"игра сейчас запущена — закройте её";
     case 0x80073D06: return L"для другого пользователя установлена более новая версия Minecraft";
@@ -145,6 +153,85 @@ bool Wait(IAsyncOperationWithProgress<DeploymentResult, DeploymentProgress> op,
     return false;
 }
 
+
+// Framework packages Minecraft (UWP) depends on. Exact x64 builds served by Windows Update
+// (UpdateIDs were taken from the Store listings, size and SHA-256 from the downloaded files).
+struct Framework {
+    const wchar_t* name;
+    uint16_t       version[4];
+    const wchar_t* updateId;
+    uint64_t       size;
+    const char*    sha256;
+};
+
+const Framework FRAMEWORKS[] = {
+    { L"Microsoft.VCLibs.140.00", { 14, 0, 33519, 0 },
+      L"6194cec0-df15-4b08-af05-b09565805255", 896581ull,
+      "9c17b521f9d690a1f504da5108ed6eec5669eb3a8fd1331eef43e40d84e74283" },
+    { L"Microsoft.Services.Store.Engagement", { 10, 0, 23012, 0 },
+      L"e2ebdeec-c7ae-4b55-9dfa-e855bb734c58", 299159ull,
+      "0133757628606a9c73f6265e235ad6fb6e80973b89a04b8c0208f93786a24f93" },
+};
+
+const wchar_t* MS_PUBLISHER = L"CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US";
+
+uint64_t PackVersion(uint16_t a, uint16_t b, uint16_t c, uint16_t d) {
+    return ((uint64_t)a << 48) | ((uint64_t)b << 32) | ((uint64_t)c << 16) | d;
+}
+
+uint64_t ParseVersion(const std::string& s) {
+    unsigned v[4] = { 0, 0, 0, 0 };
+    sscanf_s(s.c_str(), "%u.%u.%u.%u", &v[0], &v[1], &v[2], &v[3]);
+    return PackVersion((uint16_t)v[0], (uint16_t)v[1], (uint16_t)v[2], (uint16_t)v[3]);
+}
+
+// MinVersion of <PackageDependency Name="name" .../> in the manifest; false if not listed.
+bool ManifestDependency(const std::string& manifest, const std::wstring& name, uint64_t& minVersion) {
+    std::string key = "Name=\"" + Net::Narrow(name) + "\"";   // closing quote: skip *.UWPDesktop
+    size_t pos = 0;
+    while ((pos = manifest.find("<PackageDependency", pos)) != std::string::npos) {
+        size_t end = manifest.find('>', pos);
+        if (end == std::string::npos) break;
+        std::string tag = manifest.substr(pos, end - pos);
+        pos = end;
+        if (tag.find(key) == std::string::npos) continue;
+        minVersion = 0;
+        size_t mv = tag.find("MinVersion=\"");
+        if (mv != std::string::npos) {
+            mv += 12;
+            minVersion = ParseVersion(tag.substr(mv, tag.find('"', mv) - mv));
+        }
+        return true;
+    }
+    return false;
+}
+
+// Highest installed x64 (or neutral) version of a framework for the current user, 0 if none.
+uint64_t InstalledVersion(PackageManager& pm, const std::wstring& name) {
+    uint64_t best = 0;
+    try {
+        for (auto const& pkg : pm.FindPackagesForUser(winrt::hstring{}, name, MS_PUBLISHER)) {
+            auto id = pkg.Id();
+            auto arch = id.Architecture();
+            if (arch != winrt::Windows::System::ProcessorArchitecture::X64 &&
+                arch != winrt::Windows::System::ProcessorArchitecture::Neutral) continue;
+            auto v = id.Version();
+            best = (std::max)(best, PackVersion(v.Major, v.Minor, v.Build, v.Revision));
+        }
+    } catch (...) {}
+    return best;
+}
+
+std::wstring VersionString(const uint16_t v[4]) {
+    return std::to_wstring(v[0]) + L"." + std::to_wstring(v[1]) + L"." + std::to_wstring(v[2]) + L"." + std::to_wstring(v[3]);
+}
+
+uint64_t FileSize(const std::wstring& path) {
+    WIN32_FILE_ATTRIBUTE_DATA a{};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &a)) return 0;
+    return ((uint64_t)a.nFileSizeHigh << 32) | a.nFileSizeLow;
+}
+
 } // namespace
 
 namespace Installer {
@@ -183,6 +270,67 @@ bool IsGameRunning() {
     }
     CloseHandle(snap);
     return found;
+}
+
+bool EnsureDependencies(const std::wstring& gameDir, const std::wstring& depsDir,
+                        const std::function<void(const std::wstring&)>& onStatus,
+                        std::wstring& status) {
+    EnsureApartment();
+    std::string manifest;
+    {
+        std::ifstream f(fs::path(LongPath(gameDir + L"\\AppxManifest.xml")), std::ios::binary);
+        if (!f) { status = L"в папке версии нет AppxManifest.xml — удалите папку и скачайте снова"; return false; }
+        std::ostringstream ss; ss << f.rdbuf(); manifest = ss.str();
+    }
+
+    try {
+        PackageManager pm;
+        for (const Framework& fw : FRAMEWORKS) {
+            uint64_t need = 0;
+            if (!ManifestDependency(manifest, fw.name, need)) continue;
+            if (InstalledVersion(pm, fw.name) >= need) continue;
+
+            const uint64_t ours = PackVersion(fw.version[0], fw.version[1], fw.version[2], fw.version[3]);
+            std::wstring label = std::wstring(fw.name) + L" " + VersionString(fw.version);
+            if (ours < need) {
+                status = L"нужна более новая " + std::wstring(fw.name) + L" — установите её из Microsoft Store";
+                return false;
+            }
+
+            CreateDirectoryW(depsDir.c_str(), nullptr);
+            std::wstring appx = depsDir + L"\\" + fw.name + L"_" + VersionString(fw.version) + L"_x64.appx";
+            bool have = FileSize(appx) == fw.size && Net::Sha256File(appx) == fw.sha256;
+            if (!have) {
+                if (onStatus) onStatus(L"Скачиваю зависимость " + label + L"...");
+                std::wstring url, err;
+                if (!WU::ResolveDownloadUrl(fw.updateId, url, err)) {
+                    status = L"не удалось получить " + label + L": " + err;
+                    return false;
+                }
+                if (!Net::DownloadFile(url, appx, nullptr, nullptr, err)) {
+                    status = L"не удалось скачать " + label + L": " + err;
+                    return false;
+                }
+                if (FileSize(appx) != fw.size || Net::Sha256File(appx) != fw.sha256) {
+                    DeleteFileW(appx.c_str());
+                    status = L"файл " + label + L" повреждён (не совпал SHA-256), попробуйте ещё раз";
+                    return false;
+                }
+            }
+
+            if (onStatus) onStatus(L"Устанавливаю зависимость " + label + L"...");
+            Uri uri{ winrt::hstring(PathToFileUri(appx)) };
+            std::wstring err;
+            if (!Wait(pm.AddPackageAsync(uri, nullptr, DeploymentOptions::None), nullptr, err)) {
+                status = L"не удалось установить " + label + L": " + err;
+                return false;
+            }
+        }
+    } catch (winrt::hresult_error const& e) {
+        status = L"ошибка установки зависимостей " + Hex(e.code()) + L": " + std::wstring(e.message().c_str());
+        return false;
+    }
+    return true;
 }
 
 bool Register(const std::wstring& gameDir, const std::wstring& backupRoot,

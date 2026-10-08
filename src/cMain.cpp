@@ -659,6 +659,12 @@ void cMain::InstallWorker(VersionInfo v) {
 
     // ---- Step 4: register in Windows (Developer Mode) ----
     this->postStep(STEP_REGISTER, StepState::Running);
+    this->postStatus(L"Проверяю зависимости (VCLibs, Store.Engagement)...");
+    if (!Installer::EnsureDependencies(dir, Versions::Root() + L"\\dependencies",
+            [this](const std::wstring& s) { this->postStatus(s); }, status)) {
+        fail(STEP_REGISTER, L"Зависимости: " + status);
+        return;
+    }
     this->postStatus(L"Регистрирую игру в Windows...");
     bool ok = Installer::Register(dir, Globals::EXE_DIR + L"\\backups",
         [this](unsigned pct) {

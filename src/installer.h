@@ -17,6 +17,14 @@ namespace Installer {
 
     bool IsGameRunning();
 
+    // Installs the framework packages listed in <gameDir>\AppxManifest.xml (Microsoft.VCLibs.140.00,
+    // Microsoft.Services.Store.Engagement) that are missing on this PC. They are downloaded from
+    // Windows Update into depsDir and checked by size + SHA-256. Without them registration fails
+    // with 0x80073CF3.
+    bool EnsureDependencies(const std::wstring& gameDir, const std::wstring& depsDir,
+                            const std::function<void(const std::wstring&)>& onStatus,
+                            std::wstring& status);
+
     // Registers gameDir. If a Store copy is installed, its worlds (LocalState\games\com.mojang)
     // are copied to backupRoot first and restored into the new registration.
     bool Register(const std::wstring& gameDir, const std::wstring& backupRoot,

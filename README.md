@@ -18,7 +18,10 @@
    (файл `AppxSignature.p7x` пропускается, чтобы пакет можно было зарегистрировать в режиме разработчика).
 3. **Патч Xbox Live** — встроенный KeyPatcher заменяет публичный ключ в `Minecraft.Windows.exe`,
    чтобы работал вход в Xbox Live (можно отключить в настройках).
-4. **Регистрация** — регистрирует папку как пакет в Windows (`RegisterPackageAsync`, Development Mode).
+4. **Регистрация** — при необходимости ставит зависимости игры (`Microsoft.VCLibs.140.00`,
+   `Microsoft.Services.Store.Engagement` — скачиваются с Windows Update в
+   `imported_versions\dependencies` и проверяются по SHA-256), затем регистрирует папку как пакет
+   в Windows (`RegisterPackageAsync`, Development Mode).
 
 После этого кнопка становится **ИГРАТЬ**.
 
