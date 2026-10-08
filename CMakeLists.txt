@@ -39,15 +39,15 @@ target_compile_definitions(miniz PUBLIC MINIZ_NO_STDIO MINIZ_NO_TIME MINIZ_NO_ZL
 # Keep miniz.lib out of the folder with the .exe.
 set_target_properties(miniz PROPERTIES ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 
-# The icon is stored in git as Base64 text; decode it once at configure time.
+# The icon is stored in git as Base64 text.
 set(ICON_ICO "${CMAKE_SOURCE_DIR}/src/icon/icon.ico")
-if(NOT EXISTS "${ICON_ICO}")
-    execute_process(COMMAND powershell -NoProfile -Command
-        "[IO.File]::WriteAllBytes('${ICON_ICO}', [Convert]::FromBase64String((Get-Content -Raw '${CMAKE_SOURCE_DIR}/src/icon/icon.ico.b64')))"
-        RESULT_VARIABLE ICON_RESULT)
-    if(NOT ICON_RESULT EQUAL 0)
-        message(FATAL_ERROR "Could not decode src/icon/icon.ico.b64")
-    endif()
+# Decoded on every configure so a changed icon.ico.b64 always reaches the build.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/icon/icon.ico.b64")
+execute_process(COMMAND powershell -NoProfile -Command
+    "[IO.File]::WriteAllBytes('${ICON_ICO}', [Convert]::FromBase64String((Get-Content -Raw '${CMAKE_SOURCE_DIR}/src/icon/icon.ico.b64')))"
+    RESULT_VARIABLE ICON_RESULT)
+if(NOT ICON_RESULT EQUAL 0)
+    message(FATAL_ERROR "Could not decode src/icon/icon.ico.b64")
 endif()
 
 add_executable(${PROJECT_NAME} WIN32)
