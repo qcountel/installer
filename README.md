@@ -4,13 +4,25 @@
 [1.16.100-installer](https://github.com/qcountel/1.16.100-installer): wxWidgets, шрифт Monocraft,
 вкладки, «каменные» кнопки и полосы прогресса.
 
-Устанавливается только **Minecraft 1.16.100.4**. Кнопка с корзиной рядом с версией удаляет её:
+Доступны две версии — выбираются кнопкой «ВЕРСИЯ» на странице установки (выбор сохраняется):
+
+| Версия | Откуда | Шаги |
+|---|---|---|
+| **1.16.100.4** | Google Диск (по умолчанию) или Windows Update | загрузка → распаковка → патч Xbox Live → регистрация |
+| **26.52.3** | только официальная сборка с серверов Microsoft (Xbox CDN, `.msixvc`) | загрузка → установка и регистрация |
+
+Для 26.52.3 в «Настройках» нет Google Диска и патча Xbox Live: это GDK-версия, она уже
+подписана Microsoft и сама входит в Xbox Live. Пакет ставится как есть (`AddPackageAsync`),
+режим разработчика не нужен, но нужны **Gaming Services** (установщик откроет их страницу в Store)
+и лицензия Minecraft на учётной записи Microsoft. Миры GDK-версий лежат в `%APPDATA%\Minecraft Bedrock`.
+
+Кнопка с корзиной рядом с версией удаляет её:
 после подтверждения игра удаляется из Windows (миры сохраняются в `backups`) и стираются все её файлы.
 Minecraft из Microsoft Store корзина не трогает.
 
 ## Что делает
 
-Кнопка **СКАЧАТЬ** проходит 4 шага:
+Для 1.16.100.4 кнопка **СКАЧАТЬ** проходит 4 шага:
 
 1. **Загрузка** — получает прямую ссылку на `.appx` через Windows Update (как
    [MCLauncher](https://github.com/MCMrARM/mc-w10-version-launcher): SOAP-запрос
@@ -88,6 +100,7 @@ wxWidgets 3.2.6 и miniz 3.0.2 скачиваются автоматически
 ## Благодарности и лицензия
 
 - [MCLauncher](https://github.com/MCMrARM/mc-w10-version-launcher) — логика загрузки и регистрации, база версий.
+- [GdkLinks](https://github.com/MinecraftBedrockArchiver/GdkLinks) — ссылки на официальные `.msixvc` GDK-версий.
 - [KeyPatcher](https://github.com/ambiennt/KeyPatcher) (ambiennt) — патч ключа Xbox Live, GPLv3.
 - [Monocraft](https://github.com/IdreesInc/Monocraft) — шрифт.
 - [miniz](https://github.com/richgel999/miniz), [wxWidgets](https://www.wxwidgets.org/).

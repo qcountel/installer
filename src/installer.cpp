@@ -15,6 +15,7 @@
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.ApplicationModel.h>
+#include <winrt/Windows.ApplicationModel.Core.h>
 #include <winrt/Windows.Management.Core.h>
 #include <winrt/Windows.Management.Deployment.h>
 #include <winrt/Windows.Storage.h>
@@ -69,6 +70,8 @@ std::wstring Hint(HRESULT hr) {
     case 0x80073CF9: return L"установка не удалась (нет места на диске или ошибка Windows)";
     case 0x80070005: return L"нет доступа — запустите установщик от имени администратора";
     case 0x80070003: return L"путь не найден — папка версии повреждена, удалите её и скачайте снова";
+    case 0x80070070: return L"недостаточно места на диске";
+    case 0x80073CF0: return L"пакет повреждён или не открывается — удалите версию и скачайте снова";
     default: return L"";
     }
 }
@@ -526,7 +529,57 @@ bool IsOurs(const PackageState& pkg, const std::wstring& versionsRoot, const std
     return pkg.version == signedVersion;
 }
 
-bool Uninstall(const std::wstring& versionsRoot, const std::wstring& signedVersion,
+bool IsGamingServicesInstalled() {
+    EnsureApartment();
+    try {
+        PackageManager pm;
+        for (auto const& pkg : pm.FindPackagesForUser(winrt::hstring{}, Globals::GAMING_SERVICES_FAMILY)) {
+            (void)pkg;
+            return true;
+        }
+    } catch (...) {}
+    return false;
+}
+
+void OpenGamingServicesStore() {
+    ShellExecuteW(nullptr, L"open", L"ms-windows-store://pdp/?productid=9MWPM2CQNLHN", nullptr, nullptr, SW_SHOWNORMAL);
+}
+
+bool InstallPackage(const std::wstring& packagePath, const std::wstring& backupRoot,
+                    const std::function<void(unsigned)>& onProgress,
+                    const std::function<void(const std::wstring&)>& onStatus,
+                    std::wstring& status) {
+    EnsureApartment();
+    std::wstring restoreFrom;
+    try {
+        PackageManager pm;
+        bool already = false;
+        if (!RemoveCurrent(pm, L"", backupRoot, onProgress, onStatus, restoreFrom, already, status)) return false;
+
+        if (onStatus) onStatus(L"Устанавливаю и регистрирую пакет в Windows...");
+        Uri uri{ winrt::hstring(PathToFileUri(packagePath)) };
+        if (!Wait(pm.AddPackageAsync(uri, nullptr, DeploymentOptions::ForceApplicationShutdown), onProgress, status)) {
+            status = L"Ошибка установки " + status +
+                     L"\nПроверьте, что на учётной записи Microsoft есть Minecraft и что Gaming Services установлены" +
+                     (restoreFrom.empty() ? L"" : L"\nМиры сохранены в " + restoreFrom);
+            return false;
+        }
+    } catch (winrt::hresult_error const& e) {
+        std::wstring hint = Hint(e.code());
+        status = L"Ошибка установки " + Hex(e.code()) + L": " +
+                 (hint.empty() ? std::wstring(e.message().c_str()) : hint);
+        return false;
+    }
+
+    // GDK versions keep worlds in %APPDATA%\Minecraft Bedrock, not in the package's LocalState,
+    // so the backup is not copied back automatically.
+    status = L"Игра установлена";
+    if (!restoreFrom.empty())
+        status += L"\nМиры прошлой версии сохранены в " + restoreFrom;
+    return true;
+}
+
+bool Uninstall(const std::function<bool(const PackageState&)>& isTarget,
                const std::wstring& backupRoot,
                const std::function<void(const std::wstring&)>& onStatus,
                bool& removed, std::wstring& status) {
@@ -542,7 +595,7 @@ bool Uninstall(const std::wstring& versionsRoot, const std::wstring& signedVersi
             auto v = pkg.Id().Version();
             st.version = std::to_wstring(v.Major) + L"." + std::to_wstring(v.Minor) + L"." +
                          std::to_wstring(v.Build) + L"." + std::to_wstring(v.Revision);
-            if (!IsOurs(st, versionsRoot, signedVersion)) continue;
+            if (!isTarget(st)) continue;
 
             std::wstring worlds = StoreWorldsDir();
             std::error_code ec;
@@ -568,7 +621,18 @@ bool Uninstall(const std::wstring& versionsRoot, const std::wstring& signedVersi
 }
 
 bool Launch() {
-    std::wstring target = std::wstring(L"shell:AppsFolder\\") + Globals::APP_ID;
+    // UWP builds call their entry "App", GDK builds "Game": take the AUMID from the package itself.
+    std::wstring aumid = Globals::APP_ID;
+    EnsureApartment();
+    try {
+        PackageManager pm;
+        for (auto const& pkg : pm.FindPackagesForUser(winrt::hstring{}, Globals::PACKAGE_FAMILY)) {
+            auto entries = pkg.GetAppListEntries();
+            if (entries.Size() > 0) aumid = entries.GetAt(0).AppUserModelId().c_str();
+            break;
+        }
+    } catch (...) {}
+    std::wstring target = L"shell:AppsFolder\\" + aumid;
     HINSTANCE r = ShellExecuteW(nullptr, L"open", L"explorer.exe", target.c_str(), nullptr, SW_SHOWNORMAL);
     return reinterpret_cast<INT_PTR>(r) > 32;
 }

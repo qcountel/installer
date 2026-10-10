@@ -3,6 +3,7 @@
 #include "config.h"
 #include "flatButton.h"
 #include "versions.h"
+#include "installer.h"
 
 #include <array>
 #include <atomic>
@@ -28,12 +29,15 @@ public:
     wxPanel*      pageSettings = nullptr;
 
     // Install page
-    FlatButton*   btn_Version = nullptr;  // "ВЕРСИЯ: 1.16.100.4" (display only)
+    FlatButton*   btn_Version = nullptr;  // "ВЕРСИЯ: 1.16.100.4" — click to pick 1.16.100.4 / 26.52.3
     FlatButton*   btn_Delete = nullptr;   // trash: uninstall + delete files
     FlatButton*   btn_Main = nullptr;     // "СКАЧАТЬ" / "УСТАНОВИТЬ" / "ИГРАТЬ"
     wxStaticText* lbl_Status = nullptr;
 
     // Settings page
+    wxPanel*      card_GDrive = nullptr;   // 1.16.100.4 only
+    wxPanel*      card_Xbox = nullptr;     // 1.16.100.4 only
+    wxPanel*      card_New = nullptr;      // 26.52.3 only: official build, nothing to configure
     wxCheckBox*   chk_GDrive = nullptr;
     wxRadioButton* rb_GDriveDev = nullptr;
     wxRadioButton* rb_GDriveCert = nullptr;
@@ -67,6 +71,10 @@ public:
 
     // Versions
     void selectVersion(const VersionInfo& v);
+    void OnVersionButton(wxCommandEvent& evt);
+    bool isGdk() const { return this->selected.kind == PackageKind::GDK; }
+    std::vector<int> visibleSteps() const;            // GDK: download + install only
+    bool isSelectedInstalled(const Installer::PackageState& pkg) const;
     void refreshMainButton();
 
     // Install
@@ -77,6 +85,8 @@ public:
     Source sourceFor(const VersionInfo& v) const;
     void startInstall(Source src);
     void InstallWorker(VersionInfo v, Source src);
+    // 26.52.3: download the official .msixvc from Microsoft and install it (no unpack, no patch).
+    void InstallGdkWorker(VersionInfo v);
     bool DownloadAndExtract(const VersionInfo& v, std::wstring& status);
     // Google Drive build: download the zip and unpack it for the given mode.
     // driveFailed = the problem is on the Drive side (offer the official build instead).

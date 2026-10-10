@@ -31,6 +31,13 @@ static const wchar_t* STEP_NAMES[cMain::STEP_COUNT] = {
 // Overall progress share of each step: download 0-55, unpack 55-80, patch 80-83, register 83-100.
 static const int STEP_FROM[cMain::STEP_COUNT] = { 0, 55, 80, 83 };
 static const int STEP_TO[cMain::STEP_COUNT]   = { 55, 80, 83, 100 };
+// 26.52.3 (GDK) has only two steps: download 0-70, install + register 70-100.
+static const int GDK_DOWNLOAD_TO = 70;
+
+static wxString StepName(int step, bool gdk) {
+    if (gdk && step == cMain::STEP_REGISTER) return L"Установка";
+    return STEP_NAMES[step];
+}
 
 wxBEGIN_EVENT_TABLE(cMain, wxFrame)
 EVT_BUTTON(ID_MAIN, cMain::OnMainButton)
@@ -113,7 +120,7 @@ cMain::cMain()
     Theme::ApplyDarkTitleBar((HWND)this->GetHandle());
     this->SetBackgroundColour(Theme::BG);
 
-    this->selected = { Globals::DEFAULT_VERSION, Globals::DEFAULT_UPDATE_ID };
+    this->selected = Versions::Find(Globals::SELECTED_VERSION);
     this->steps.fill(StepState::Pending);
 
     // ---- Tabs ----
@@ -135,7 +142,8 @@ cMain::cMain()
 
     this->btn_Version = new FlatButton(this->pageInstall, ID_VERSION, L"", wxDefaultPosition, wxSize(244, 40));
     this->btn_Version->SetFont(Theme::Font(9));
-    this->btn_Version->SetPassive(true);   // only 1.16.100.4 is offered
+    this->btn_Version->SetToolTip(L"Выбрать версию");
+    this->btn_Version->Bind(wxEVT_BUTTON, &cMain::OnVersionButton, this);
 
     this->btn_Delete = new FlatButton(this->pageInstall, ID_DELETE, L"", wxDefaultPosition, wxSize(48, 40));
     this->btn_Delete->SetIcon(TrashIcon());
@@ -159,7 +167,8 @@ cMain::cMain()
     wxBoxSizer* root = new wxBoxSizer(wxVERTICAL);
 
     wxBoxSizer* s = nullptr;
-    wxPanel* gd = MakeCard(this->pageSettings, L"СБОРКА 1.16.100.4", s);
+    wxPanel* gd = MakeCard(this->pageSettings, L"СБОРКА " + std::wstring(Globals::DEFAULT_VERSION), s);
+    this->card_GDrive = gd;
     this->chk_GDrive = MakeCheck(gd, L"Скачивание с Google Дисков");
     s->Add(this->chk_GDrive, 0, wxLEFT | wxRIGHT, 12);
     this->rb_GDriveDev = MakeRadio(gd, L"Через режим разработчика (+ патч Xbox)", true);
@@ -175,13 +184,22 @@ cMain::cMain()
     root->Add(gd, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, 14);
 
     wxPanel* xbox = MakeCard(this->pageSettings, L"XBOX LIVE", s);
+    this->card_Xbox = xbox;
     this->chk_KeyPatch = MakeCheck(xbox, L"Патчить ключ Xbox Live (KeyPatcher)");
     s->Add(this->chk_KeyPatch, 0, wxLEFT | wxRIGHT, 12);
     s->Add(MakeLabel(xbox, L"Старые версии не входят в Xbox: Mojang сменила ключ.\nПатч заменяет его в Minecraft.Windows.exe", Theme::CARD, true), 0, wxALL, 12);
     root->Add(xbox, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, 14);
 
+    wxPanel* fresh = MakeCard(this->pageSettings, L"СБОРКА " + std::wstring(Globals::NEW_VERSION), s);
+    this->card_New = fresh;
+    s->Add(MakeLabel(fresh, L"Только официальная сборка с серверов Microsoft.\n"
+                            L"Google Диск и патч Xbox Live для этой версии\nне нужны: пакет просто "
+                            L"устанавливается\nи регистрируется в Windows", Theme::CARD, true),
+           0, wxLEFT | wxRIGHT | wxBOTTOM, 12);
+    root->Add(fresh, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, 14);
+
     wxPanel* files = MakeCard(this->pageSettings, L"ФАЙЛЫ", s);
-    this->chk_DeleteAppx = MakeCheck(files, L"Удалять .appx после распаковки");
+    this->chk_DeleteAppx = MakeCheck(files, L"Удалять скачанный пакет после установки");
     s->Add(this->chk_DeleteAppx, 0, wxLEFT | wxRIGHT, 12);
     s->Add(MakeLabel(files, L"Скрытая папка %LOCALAPPDATA%\\MinecraftInstaller", Theme::CARD, true), 0, wxALL, 12);
     this->btn_OpenFolder = new FlatButton(files, ID_OPEN_FOLDER, L"ОТКРЫТЬ ПАПКУ", wxDefaultPosition, wxSize(-1, 36));
@@ -205,7 +223,7 @@ cMain::cMain()
     this->ShowPage(false);
 
     this->selectVersion(this->selected);
-    this->setStatus(L"Minecraft " + std::wstring(Globals::DEFAULT_VERSION));
+    this->setStatus(L"Minecraft " + this->selected.name);
 }
 
 cMain::~cMain() {
@@ -304,8 +322,7 @@ void cMain::setStatus(const wxString& msg) {
 // --------------------------------------------------------------------------- versions
 void cMain::selectVersion(const VersionInfo& v) {
     this->selected = v;
-    bool isDefault = v.name == Globals::DEFAULT_VERSION;
-    this->btn_Version->SetCaption(L"ВЕРСИЯ: " + v.name + (isDefault ? L" ★" : L"") +
+    this->btn_Version->SetCaption(L"ВЕРСИЯ: " + v.name +
                                   (this->sourceFor(v) != Source::Official ? L" · ДИСК" : L""));
     this->steps.fill(StepState::Pending);
     this->progress = 0;
@@ -314,7 +331,35 @@ void cMain::selectVersion(const VersionInfo& v) {
     this->refreshMainButton();
 }
 
+void cMain::OnVersionButton(wxCommandEvent&) {
+    if (this->busy.load()) return;
+    const auto& list = Versions::Available();
+    wxMenu menu;
+    for (size_t i = 0; i < list.size(); ++i) {
+        wxString label = list[i].name + (list[i].kind == PackageKind::GDK
+                                             ? L"  (официальная, Microsoft)" : L"  (Xbox-патч, Google Диск)");
+        menu.AppendRadioItem(wxID_HIGHEST + 1 + (int)i, label)->Check(list[i].name == this->selected.name);
+    }
+    menu.Bind(wxEVT_MENU, [this, &list](wxCommandEvent& e) {
+        size_t i = (size_t)(e.GetId() - wxID_HIGHEST - 1);
+        if (i >= list.size() || list[i].name == this->selected.name) return;
+        Globals::SELECTED_VERSION = list[i].name;
+        this->cfg.save();
+        this->selectVersion(list[i]);
+        this->fillSettings();   // 26.52.3 hides the Google Drive and Xbox Live options
+        this->setStatus(L"Minecraft " + list[i].name);
+    });
+    wxPoint pos = this->btn_Version->GetPosition();
+    this->pageInstall->PopupMenu(&menu, pos.x, pos.y + this->btn_Version->GetSize().GetHeight());
+}
+
+std::vector<int> cMain::visibleSteps() const {
+    if (this->isGdk()) return { STEP_DOWNLOAD, STEP_REGISTER };
+    return { STEP_DOWNLOAD, STEP_EXTRACT, STEP_PATCH, STEP_REGISTER };
+}
+
 cMain::Source cMain::sourceFor(const VersionInfo& v) const {
+    if (v.kind == PackageKind::GDK) return Source::Official;   // no Google Drive build for 26.52.3
     if (!Globals::GDRIVE_ENABLED || v.name != Globals::DEFAULT_VERSION) return Source::Official;
     return Globals::GDRIVE_MODE == Globals::GDriveMode::Cert ? Source::GDriveCert : Source::GDriveDev;
 }
@@ -329,13 +374,28 @@ bool SignedReady(const std::wstring& version) {
 }
 // Version of the package in the Drive build (1.16.100.4 -> 1.16.10004.0).
 const wchar_t* GDRIVE_PACKAGE_VERSION = L"1.16.10004.0";
+bool MsixvcReady(const std::wstring& version) {
+    WIN32_FILE_ATTRIBUTE_DATA a{};
+    if (!GetFileAttributesExW(Versions::MsixvcPath(version).c_str(), GetFileExInfoStandard, &a)) return false;
+    return ((((uint64_t)a.nFileSizeHigh) << 32) | a.nFileSizeLow) == Globals::NEW_MSIXVC_SIZE;
+}
+}
+
+// Is the package currently installed in Windows the selected version, installed by this program?
+bool cMain::isSelectedInstalled(const Installer::PackageState& pkg) const {
+    if (!pkg.found) return false;
+    if (this->isGdk()) return !pkg.devMode && pkg.version == Globals::NEW_PACKAGE_VERSION;
+    return Installer::IsOurs(pkg, Versions::Root(), GDRIVE_PACKAGE_VERSION);
 }
 
 void cMain::refreshMainButton() {
     const Source src = this->sourceFor(this->selected);
     const Installer::PackageState pkg = Installer::Current();
     bool ready;
-    if (src == Source::GDriveCert) {
+    if (this->isGdk()) {
+        this->playReady = this->isSelectedInstalled(pkg);
+        ready = MsixvcReady(this->selected.name);
+    } else if (src == Source::GDriveCert) {
         // The signed build lives in WindowsApps; a Store copy of 1.16.100.4 is no longer possible.
         this->playReady = pkg.found && !pkg.devMode && pkg.version == GDRIVE_PACKAGE_VERSION;
         ready = SignedReady(this->selected.name);
@@ -390,16 +450,21 @@ void cMain::OnInstallPagePaint(wxPaintEvent&) {
     dc.DrawText(sub, bx + (box - tw) / 2, by + box / 2 + 4);
 
     // ---- Current step heading ----
-    int current = -1;
-    for (int k = 0; k < STEP_COUNT; ++k)
-        if (this->steps[k] == StepState::Running || this->steps[k] == StepState::Failed) { current = k; break; }
+    const bool gdk = this->isGdk();
+    const std::vector<int> shown = this->visibleSteps();
+    const int shownCount = (int)shown.size();
+    int current = -1, currentPos = -1;
+    for (int i = 0; i < shownCount; ++i) {
+        int k = shown[i];
+        if (this->steps[k] == StepState::Running || this->steps[k] == StepState::Failed) { current = k; currentPos = i; break; }
+    }
     bool allDone = this->steps[STEP_REGISTER] == StepState::Done;
 
     wxString heading;
     if (allDone)           heading = L"ВСЁ ГОТОВО";
-    else if (current >= 0) heading = wxString::Format(L"ШАГ %d ИЗ %d: %s", current + 1, (int)STEP_COUNT,
-                                                      wxString(STEP_NAMES[current]).Upper());
-    else                   heading = wxString::Format(L"%d ШАГА ДО ИГРЫ", (int)STEP_COUNT);
+    else if (current >= 0) heading = wxString::Format(L"ШАГ %d ИЗ %d: %s", currentPos + 1, shownCount,
+                                                      StepName(current, gdk).Upper());
+    else                   heading = wxString::Format(L"%d ШАГА ДО ИГРЫ", shownCount);
     int top = by + box + 18;
     dc.SetFont(Theme::Font(10));
     dc.GetTextExtent(heading, &tw, &th);
@@ -417,10 +482,11 @@ void cMain::OnInstallPagePaint(wxPaintEvent&) {
     };
     int sx = 44, sy = top + 30;
     dc.SetFont(Theme::Font(9));
-    for (int k = 0; k < STEP_COUNT; ++k) {
+    for (int i = 0; i < shownCount; ++i) {
+        int k = shown[i];
         bool lit = this->steps[k] == StepState::Done || this->steps[k] == StepState::Running;
         dc.SetTextForeground(lit ? Theme::FG : Theme::FG_DIM);
-        dc.DrawText(mark(this->steps[k]) + wxString::Format(L" %d. ", k + 1) + STEP_NAMES[k], sx, sy + k * 22);
+        dc.DrawText(mark(this->steps[k]) + wxString::Format(L" %d. ", i + 1) + StepName(k, gdk), sx, sy + i * 22);
     }
 
     // ---- Progress bars ----
@@ -449,8 +515,8 @@ void cMain::OnInstallPagePaint(wxPaintEvent&) {
     };
 
     int px = 44, pw = w - 88;
-    int stepBarY = sy + STEP_COUNT * 22 + 26;
-    wxString stepLabel = current >= 0 ? wxString(STEP_NAMES[current]) : (allDone ? wxString(L"Готово") : wxString(L"Текущий шаг"));
+    int stepBarY = sy + STEP_COUNT * 22 + 26;   // same place for both versions
+    wxString stepLabel = current >= 0 ? StepName(current, gdk) : (allDone ? wxString(L"Готово") : wxString(L"Текущий шаг"));
     drawBar(px, stepBarY, pw, this->stepProgress, stepLabel, wxString::Format(L"%d%%", this->stepProgress));
 
     dc.SetFont(Theme::Font(7));
@@ -540,7 +606,18 @@ void cMain::startInstall(Source src) {
 
     // Registering an unsigned folder requires Developer Mode — check before downloading 300 MB.
     // The signed Drive build (certificate mode) is installed without it.
-    if (src != Source::GDriveCert && !Installer::IsDeveloperModeEnabled()) {
+    const bool gdk = this->isGdk();
+    if (gdk && !Installer::IsGamingServicesInstalled()) {
+        Dialog::Show(this, L"Нужны Gaming Services",
+                     L"Minecraft " + std::wstring(Globals::NEW_VERSION) + L" — GDK-версия, ей нужны «Игровые службы» "
+                     L"(Gaming Services) от Microsoft.\n\nСейчас откроется Microsoft Store: установите их "
+                     L"и нажмите кнопку ещё раз.", Dialog::Kind::Info, L"ОТКРЫТЬ");
+        Installer::OpenGamingServicesStore();
+        this->setStatus(L"Установите Gaming Services и нажмите ещё раз");
+        return;
+    }
+    // The official 26.52.3 package is signed by Microsoft — Developer Mode is not needed.
+    if (!gdk && src != Source::GDriveCert && !Installer::IsDeveloperModeEnabled()) {
         Dialog::Show(this, L"Нужен режим разработчика",
                      L"Для установки нужен режим разработчика Windows.\n\n"
                      L"Сейчас откроются Параметры → Для разработчиков: включите «Режим разработчика» "
@@ -564,7 +641,8 @@ void cMain::startInstall(Source src) {
     this->stepDetail.clear();
     this->setBusyUi(true);
 
-    this->worker = std::thread(&cMain::InstallWorker, this, this->selected, src);
+    if (gdk) this->worker = std::thread(&cMain::InstallGdkWorker, this, this->selected);
+    else     this->worker = std::thread(&cMain::InstallWorker, this, this->selected, src);
 }
 
 // Step 1 + 2: Microsoft CDN -> imported_versions\Minecraft_X_x64.appx -> imported_versions\Minecraft_X_x64\.
@@ -887,6 +965,93 @@ void cMain::InstallWorker(VersionInfo v, Source src) {
            (plain ? L"" : L"\n" + status), true);
 }
 
+// 26.52.3: Xbox CDN -> imported_versions\Minecraft_26.52.3_x64.msixvc -> AddPackage (install + register).
+void cMain::InstallGdkWorker(VersionInfo v) {
+    auto finish = [this](const std::wstring& msg, bool ok) {
+        this->postStatus(msg);
+        this->CallAfter([this, ok] {
+            this->setBusyUi(false);
+            this->refreshMainButton();
+            if (!ok && !this->playReady) this->btn_Main->SetCaption(L"ПОВТОРИТЬ");
+        });
+    };
+    auto fail = [&](Step step, const std::wstring& msg) {
+        this->postStep(step, StepState::Failed);
+        finish(msg, false);
+    };
+
+    const std::wstring root = Versions::Root();
+    const std::wstring pkgPath = Versions::MsixvcPath(v.name);
+    CreateDirectoryW(root.c_str(), nullptr);
+    std::wstring status;
+
+    // ---- Step 1: download the official package ----
+    this->postStep(STEP_DOWNLOAD, StepState::Running);
+    if (MsixvcReady(v.name)) {
+        this->postDetail(L"Пакет уже скачан");
+    } else {
+        DeleteFileW(pkgPath.c_str());
+        // ~2 GB download + the installed game (Windows copies it into WindowsApps / XboxGames).
+        ULARGE_INTEGER freeBytes{};
+        if (GetDiskFreeSpaceExW(root.c_str(), &freeBytes, nullptr, nullptr) &&
+            freeBytes.QuadPart < 6ull * 1024 * 1024 * 1024) {
+            fail(STEP_DOWNLOAD, L"Мало места на диске: нужно около 6 ГБ, свободно " + FormatSize(freeBytes.QuadPart));
+            return;
+        }
+
+        bool ok = false;
+        for (const wchar_t* url : Globals::NEW_MSIXVC_URLS) {
+            if (this->cancel.load()) break;
+            this->postStatus(L"Скачиваю Minecraft " + v.name + L" с серверов Microsoft...");
+            DWORD startTick = GetTickCount(), lastTick = 0;
+            ok = Net::DownloadFile(url, pkgPath, [&](uint64_t done, uint64_t total) {
+                DWORD now = GetTickCount();
+                if (now - lastTick < 200 && done < total) return;
+                lastTick = now;
+                if (!total) total = Globals::NEW_MSIXVC_SIZE;
+                double elapsed = (now - startTick) / 1000.0;
+                double speed = elapsed > 0.5 ? done / elapsed : 0.0;
+                std::wstring detail = FormatSize(done) + L" из " + FormatSize(total);
+                if (speed > 0 && total > done) {
+                    detail += L" · " + FormatSpeed(speed);
+                    std::wstring eta = FormatEta((total - done) / speed);
+                    if (!eta.empty()) detail += L" · " + eta;
+                }
+                this->postDetail(detail);
+                uint64_t d = (std::min)(done, total);
+                this->postProgress((int)(GDK_DOWNLOAD_TO * d / total), Percent(done, total));
+            }, &this->cancel, status);
+            if (ok) break;   // otherwise try the mirror
+        }
+        if (!ok) { fail(STEP_DOWNLOAD, L"Загрузка не удалась: " + status); return; }
+        if (!MsixvcReady(v.name)) {
+            DeleteFileW(pkgPath.c_str());
+            fail(STEP_DOWNLOAD, L"Скачанный пакет неполный (не совпал размер). Попробуйте ещё раз");
+            return;
+        }
+    }
+    this->postStep(STEP_DOWNLOAD, StepState::Done);
+    this->postProgress(GDK_DOWNLOAD_TO, 100);
+
+    // ---- Step 2: install + register (Windows checks Microsoft's signature itself) ----
+    this->postStep(STEP_REGISTER, StepState::Running);
+    this->postDetail(L"");
+    auto onStatus = [this](const std::wstring& s) { this->postStatus(s); };
+    auto onProgress = [this](unsigned pct) {
+        this->postProgress(GDK_DOWNLOAD_TO + (int)pct * (100 - GDK_DOWNLOAD_TO) / 100, (int)pct);
+    };
+    if (!Installer::InstallPackage(pkgPath, Globals::DATA_DIR + L"\\backups", onProgress, onStatus, status)) {
+        fail(STEP_REGISTER, status);
+        return;
+    }
+    if (Globals::DELETE_APPX) DeleteFileW(pkgPath.c_str());   // Windows keeps its own copy
+    this->postStep(STEP_REGISTER, StepState::Done);
+    this->postProgress(100, 100);
+
+    finish(L"Готово! Minecraft " + v.name + L" (официальная сборка) установлен." +
+           (status == L"Игра установлена" ? L"" : L"\n" + status.substr(status.find(L'\n') + 1)), true);
+}
+
 // --------------------------------------------------------------------------- settings
 void cMain::fillSettings() {
     this->chk_GDrive->SetValue(Globals::GDRIVE_ENABLED);
@@ -896,12 +1061,21 @@ void cMain::fillSettings() {
     this->rb_GDriveCert->Enable(Globals::GDRIVE_ENABLED);
     this->chk_KeyPatch->SetValue(Globals::APPLY_KEYPATCH);
     this->chk_DeleteAppx->SetValue(Globals::DELETE_APPX);
+
+    // 26.52.3 is always the official build: no Google Drive, no Xbox Live patch.
+    const bool gdk = this->isGdk();
+    this->card_GDrive->Show(!gdk);
+    this->card_Xbox->Show(!gdk);
+    this->card_New->Show(gdk);
+    this->pageSettings->Layout();
 }
 
 void cMain::OnSave(wxCommandEvent&) {
-    Globals::GDRIVE_ENABLED = this->chk_GDrive->GetValue();
-    Globals::GDRIVE_MODE = this->rb_GDriveCert->GetValue() ? Globals::GDriveMode::Cert : Globals::GDriveMode::Dev;
-    Globals::APPLY_KEYPATCH = this->chk_KeyPatch->GetValue();
+    if (!this->isGdk()) {   // these options belong to 1.16.100.4 and are hidden for 26.52.3
+        Globals::GDRIVE_ENABLED = this->chk_GDrive->GetValue();
+        Globals::GDRIVE_MODE = this->rb_GDriveCert->GetValue() ? Globals::GDriveMode::Cert : Globals::GDriveMode::Dev;
+        Globals::APPLY_KEYPATCH = this->chk_KeyPatch->GetValue();
+    }
     Globals::DELETE_APPX = this->chk_DeleteAppx->GetValue();
 
     this->cfg.save();
@@ -917,6 +1091,7 @@ void cMain::setBusyUi(bool on) {
     this->btn_Main->Enable(!on);
     if (on) this->btn_Main->SetCaption(L"...");
     this->btn_Delete->Enable(!on);
+    this->btn_Version->Enable(!on);
     this->tab_Settings->Enable(!on);
     this->pageInstall->Refresh();
 }
@@ -926,6 +1101,7 @@ const wchar_t* ALL_SUFFIXES[] = { L"", Versions::GDRIVE_SUFFIX, Versions::GDRIVE
 const wchar_t* LEFTOVER_EXTS[] = { L".appx", L".zip", L".appx.part", L".zip.part" };
 
 bool HasLocalFiles(const std::wstring& version) {
+    if (Exists(Versions::MsixvcPath(version)) || Exists(Versions::MsixvcPath(version) + L".part")) return true;
     for (const wchar_t* suffix : ALL_SUFFIXES) {
         if (Exists(Versions::Dir(version, suffix))) return true;
         for (const wchar_t* ext : LEFTOVER_EXTS)
@@ -938,7 +1114,7 @@ bool HasLocalFiles(const std::wstring& version) {
 void cMain::OnDelete(wxCommandEvent&) {
     if (this->busy.load()) return;
     const std::wstring name = this->selected.name;
-    const bool installed = Installer::IsOurs(Installer::Current(), Versions::Root(), GDRIVE_PACKAGE_VERSION);
+    const bool installed = this->isSelectedInstalled(Installer::Current());
     if (!installed && !HasLocalFiles(name)) {
         this->setStatus(L"Версия " + name + L" не установлена — удалять нечего");
         return;
@@ -949,7 +1125,9 @@ void cMain::OnDelete(wxCommandEvent&) {
     }
 
     std::wstring text = L"Удалить Minecraft " + name + L"?\n\n";
-    if (installed) text += L"Игра будет удалена из Windows. Миры сохранятся в папку backups.\n";
+    if (installed) text += this->isGdk()
+        ? L"Игра будет удалена из Windows. Миры в %APPDATA%\\Minecraft Bedrock останутся на месте.\n"
+        : L"Игра будет удалена из Windows. Миры сохранятся в папку backups.\n";
     text += L"Скачанные файлы версии будут удалены с диска.";
     if (!Dialog::Ask(this, L"Удаление версии", text, Dialog::Kind::Warning, L"УДАЛИТЬ", L"ОТМЕНА"))
         return;
@@ -968,7 +1146,12 @@ void cMain::OnDelete(wxCommandEvent&) {
 void cMain::UninstallWorker(VersionInfo v) {
     std::wstring status;
     bool removed = false;
-    bool ok = Installer::Uninstall(Versions::Root(), GDRIVE_PACKAGE_VERSION, Globals::DATA_DIR + L"\\backups",
+    const bool gdk = v.kind == PackageKind::GDK;
+    auto isTarget = [gdk](const Installer::PackageState& p) {
+        if (gdk) return !p.devMode && p.version == Globals::NEW_PACKAGE_VERSION;
+        return Installer::IsOurs(p, Versions::Root(), GDRIVE_PACKAGE_VERSION);
+    };
+    bool ok = Installer::Uninstall(isTarget, Globals::DATA_DIR + L"\\backups",
                                    [this](const std::wstring& s) { this->postStatus(s); }, removed, status);
     std::wstring msg;
     if (!ok) {
@@ -981,6 +1164,8 @@ void cMain::UninstallWorker(VersionInfo v) {
             for (const wchar_t* ext : LEFTOVER_EXTS)
                 DeleteFileW((Versions::Root() + L"\\" + Versions::FolderName(v.name, suffix) + ext).c_str());
         }
+        DeleteFileW(Versions::MsixvcPath(v.name).c_str());
+        DeleteFileW((Versions::MsixvcPath(v.name) + L".part").c_str());
         msg = L"Minecraft " + v.name + L" удалён" + (status.empty() ? L"" : L".\n" + status);
     }
     this->CallAfter([this, msg] {

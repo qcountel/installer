@@ -3,12 +3,25 @@
 #include <string>
 #include <vector>
 
+// UWP = .appx from Windows Update, unpacked and registered in Developer Mode (1.16.100.4).
+// GDK = signed .msixvc from the Xbox CDN, installed as is (26.52.3).
+enum class PackageKind { UWP, GDK };
+
 struct VersionInfo {
     std::wstring name;       // e.g. "1.16.100.4"
-    std::wstring updateId;   // Store UpdateID (GUID)
+    std::wstring updateId;   // Store UpdateID (GUID), UWP only
+    PackageKind kind = PackageKind::UWP;
 };
 
 namespace Versions {
+
+    // The versions offered by the installer: 1.16.100.4 and 26.52.3.
+    const std::vector<VersionInfo>& Available();
+    // Available() entry with this name, or the default version.
+    VersionInfo Find(const std::wstring& name);
+
+    // <DATA_DIR>\imported_versions\Minecraft_26.52.3_x64.msixvc
+    std::wstring MsixvcPath(const std::wstring& version);
 
     // Release versions from the MCLauncher version database, newest first.
     // Falls back to the cached copy, and always contains Globals::DEFAULT_VERSION.

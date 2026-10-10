@@ -54,10 +54,22 @@ namespace Installer {
                        const std::function<void(const std::wstring&)>& onStatus,
                        std::wstring& status);
 
-    // Removes the Minecraft package installed by this program: a Developer Mode registration from a
-    // folder under versionsRoot, or the signed Drive build (signedVersion). A Store copy is never touched.
-    // Worlds are copied to backupRoot first. removed = a package was actually removed.
-    bool Uninstall(const std::wstring& versionsRoot, const std::wstring& signedVersion,
+    // Gaming Services: required by GDK versions (26.52.3).
+    bool IsGamingServicesInstalled();
+    void OpenGamingServicesStore();
+
+    // Installs a signed package straight from a file (the official .msixvc of 26.52.3): the current
+    // Minecraft is removed first (Store worlds are copied to backupRoot), then the package is added
+    // and registered by Windows. No unpacking, no patching, no Developer Mode.
+    bool InstallPackage(const std::wstring& packagePath, const std::wstring& backupRoot,
+                        const std::function<void(unsigned)>& onProgress,
+                        const std::function<void(const std::wstring&)>& onStatus,
+                        std::wstring& status);
+
+    // Removes the installed Minecraft package if isTarget(package) says it is the selected version
+    // installed by this program. Worlds are copied to backupRoot first.
+    // removed = a package was actually removed.
+    bool Uninstall(const std::function<bool(const PackageState&)>& isTarget,
                    const std::wstring& backupRoot,
                    const std::function<void(const std::wstring&)>& onStatus,
                    bool& removed, std::wstring& status);
@@ -65,7 +77,7 @@ namespace Installer {
     // True if the installed Minecraft package is one this program installed (see Uninstall).
     bool IsOurs(const PackageState& pkg, const std::wstring& versionsRoot, const std::wstring& signedVersion);
 
-    // Starts the registered game.
+    // Starts the registered game (UWP "App" or GDK "Game" entry, whichever the package has).
     bool Launch();
 
     // Opens a folder in Explorer.

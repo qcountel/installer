@@ -47,7 +47,7 @@ bool Parse(const std::string& body, std::vector<VersionInfo>& out) {
             const Json::JArray* row = e.arr();
             if (!row || row->size() < 3) continue;
             if ((int)(*row)[2].num() != 0) continue;   // releases only
-            VersionInfo v{ Net::Widen((*row)[0].str()), Net::Widen((*row)[1].str()) };
+            VersionInfo v{ Net::Widen((*row)[0].str()), Net::Widen((*row)[1].str()), PackageKind::UWP };
             if (!v.name.empty() && v.updateId.size() == 36) out.push_back(v);
         }
         return !out.empty();
@@ -59,6 +59,24 @@ bool Parse(const std::string& body, std::vector<VersionInfo>& out) {
 } // namespace
 
 namespace Versions {
+
+const std::vector<VersionInfo>& Available() {
+    static const std::vector<VersionInfo> list = {
+        { Globals::DEFAULT_VERSION, Globals::DEFAULT_UPDATE_ID, PackageKind::UWP },
+        { Globals::NEW_VERSION, L"", PackageKind::GDK },
+    };
+    return list;
+}
+
+VersionInfo Find(const std::wstring& name) {
+    for (const VersionInfo& v : Available())
+        if (v.name == name) return v;
+    return Available().front();
+}
+
+std::wstring MsixvcPath(const std::wstring& version) {
+    return Root() + L"\\Minecraft_" + version + L"_x64.msixvc";
+}
 
 std::wstring Root() {
     return Globals::DATA_DIR + L"\\" + Globals::VERSIONS_DIR_NAME;
@@ -111,7 +129,7 @@ std::vector<VersionInfo> Load(std::wstring& status) {
     // The default version must always be there with its known UpdateID.
     list.erase(std::remove_if(list.begin(), list.end(),
         [](const VersionInfo& v) { return v.name == Globals::DEFAULT_VERSION; }), list.end());
-    list.push_back({ Globals::DEFAULT_VERSION, Globals::DEFAULT_UPDATE_ID });
+    list.push_back({ Globals::DEFAULT_VERSION, Globals::DEFAULT_UPDATE_ID, PackageKind::UWP });
 
     // Drop duplicates, newest first.
     std::stable_sort(list.begin(), list.end(), Newer);
