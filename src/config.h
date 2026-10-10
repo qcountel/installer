@@ -33,7 +33,7 @@ namespace Globals {
     // Settings -> "Скачивание с Google Дисков". Default ON; applies to 1.16.100.4 only.
     inline bool GDRIVE_ENABLED = true;
     inline std::wstring GDRIVE_URL{
-        L"https://drive.usercontent.google.com/download?id=1cSxfij--4QNUkB9MbbLdoIpFz2XpLNXD&export=download&confirm=t" };
+        L"https://drive.usercontent.google.com/download?id=1pkiVyhJfzhSi_fsiyjLJlUdCKttR685g&export=download&confirm=t" };
     // How the Drive build is installed:
     //   Dev  — unpack + register in Developer Mode (no certificate, KeyPatcher works)  [default]
     //   Cert — trust the bundled certificate and install the signed .appx (no Developer Mode,
